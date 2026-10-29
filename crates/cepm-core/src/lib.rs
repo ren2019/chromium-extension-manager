@@ -1,5 +1,6 @@
 //! Installation use cases, independent of the desktop UI.
 pub mod profiles;
+mod updates;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -8,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempfile::{NamedTempFile, TempDir};
+pub use updates::{UpdateKind, UpdatePlan, UpdateStage};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -40,6 +42,20 @@ pub struct Installation {
     pub extension_id: Option<String>,
     pub effective_version: Option<String>,
     pub verification: Verification,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub content_digest: String,
+    #[serde(default)]
+    pub historical_version: Option<String>,
+    #[serde(default)]
+    pub installed_at: u64,
+    #[serde(default)]
+    pub updated_at: u64,
+    #[serde(default)]
+    pub last_operation: String,
+    #[serde(skip)]
+    pub recovery_required: bool,
 }
 
 pub struct Preview {
@@ -63,6 +79,7 @@ impl Preview {
 pub struct Manager {
     root: PathBuf,
     _lock: File,
+    recovery_errors: std::collections::BTreeMap<String, String>,
 }
 
 impl Manager {
@@ -80,7 +97,16 @@ impl Manager {
             .map_err(|_| "安装记录正在使用，请关闭另一个 CEPM 窗口后重试".to_string())?;
         fs::create_dir_all(root.join("installations")).map_err(io_error)?;
         fs::create_dir_all(root.join("records")).map_err(io_error)?;
-        Ok(Self { root, _lock: lock })
+        fs::create_dir_all(root.join("transactions")).map_err(io_error)?;
+        let mut manager = Self {
+            root,
+            _lock: lock,
+            recovery_errors: Default::default(),
+        };
+        manager
+            .recover_updates()
+            .map_err(|e| format!("恢复需要处理：{e}。请保留数据目录并修复后重试"))?;
+        Ok(manager)
     }
 
     pub fn preview_local(&self, source: &Path) -> Result<Preview> {
@@ -114,6 +140,7 @@ impl Manager {
         }
         let id = uuid::Uuid::new_v4().to_string();
         let install_dir = self.root.join("installations").join(&id);
+        let content_digest = updates::directory_digest(preview.snapshot.path())?;
         fs::rename(preview.snapshot.path(), &install_dir).map_err(io_error)?;
         let record = Installation {
             id,
@@ -125,6 +152,13 @@ impl Manager {
             extension_id: None,
             effective_version: None,
             verification: Verification::Pending,
+            generation: 1,
+            content_digest,
+            historical_version: None,
+            installed_at: updates::now(),
+            updated_at: updates::now(),
+            last_operation: "文件已安装，等待浏览器加载与核对".into(),
+            recovery_required: false,
         };
         if let Err(error) = self.save(&record) {
             fs::remove_dir_all(&record.install_dir).map_err(|cleanup| {
@@ -139,6 +173,14 @@ impl Manager {
     }
 
     pub fn list(&self) -> Result<Vec<Installation>> {
+        let mut records = self.read_records()?;
+        for record in &mut records {
+            self.mark_recovery_state(record);
+        }
+        Ok(records)
+    }
+
+    fn read_records(&self) -> Result<Vec<Installation>> {
         let mut records = Vec::new();
         for entry in fs::read_dir(self.root.join("records")).map_err(io_error)? {
             let path = entry.map_err(io_error)?.path();
@@ -161,12 +203,18 @@ impl Manager {
         Ok(records)
     }
 
-    pub fn confirm(&mut self, id: &str, extension_id: &str, version: &str) -> Result<Installation> {
-        let mut record = self
-            .list()?
-            .into_iter()
-            .find(|r| r.id == id)
-            .ok_or("找不到该安装记录，请重新选择")?;
+    pub fn confirm(
+        &mut self,
+        id: &str,
+        generation: u64,
+        extension_id: &str,
+        version: &str,
+    ) -> Result<Installation> {
+        let mut record = self.record(id)?;
+        self.ensure_unmodified(&record)?;
+        if generation != record.generation {
+            return Err("此核对对应的部署已过期，请重新打开详情并在浏览器重载后核对".into());
+        }
         if version != record.installed_version {
             return Err("核对版本与磁盘安装版本不一致，请在目标浏览器配置重载后再次核对".into());
         }
@@ -183,7 +231,12 @@ impl Manager {
         record.extension_id = Some(extension_id.into());
         record.effective_version = Some(version.into());
         record.verification = Verification::UserConfirmed;
+        record.last_operation = "用户已确认浏览器版本（非自动验证）".into();
         self.save(&record)?;
+        let backup = self.transaction_path(&record.id);
+        if backup.exists() {
+            fs::remove_dir_all(backup).map_err(io_error)?;
+        }
         Ok(record)
     }
 
