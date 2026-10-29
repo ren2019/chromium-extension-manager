@@ -95,3 +95,43 @@ fn failed_initial_source_is_saved_without_raw_secrets_and_history_is_bounded() {
     }
     assert_eq!(manager.operation_history(&target).unwrap().len(), 100);
 }
+
+#[test]
+fn invalid_manifest_diagnostics_request_a_valid_artifact_after_reopening() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("managed");
+    let source = temp.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let target = Target {
+        browser: Browser::Chrome,
+        profile: "work".into(),
+    };
+    for manifest in [
+        r#"{"manifest_version":2,"name":"Example","version":"1"}"#,
+        r#"{"manifest_version":3,"name":"Example","version":"01"}"#,
+        r#"{"manifest_version":3,"name":"Example","version":"1","background":{"service_worker":"missing-secret-path.js"}}"#,
+    ] {
+        fs::write(source.join("manifest.json"), manifest).unwrap();
+        let manager = Manager::open(&root).unwrap();
+        let error = manager
+            .preview_local(&source)
+            .err()
+            .expect("invalid artifact must fail");
+        manager
+            .record_operation(&target, None, OperationStage::Source, Err(&error))
+            .unwrap();
+        drop(manager);
+        let manager = Manager::open(&root).unwrap();
+        let history = manager.operation_history(&target).unwrap();
+        assert_eq!(history[0].reason, "扩展清单或必要资源无效");
+        assert_eq!(
+            history[0].next_step,
+            "选择完整的 Manifest V3 预构建产物后重试"
+        );
+        assert!(
+            !fs::read_to_string(root.join("operations.json"))
+                .unwrap()
+                .contains("missing-secret-path")
+        );
+    }
+}

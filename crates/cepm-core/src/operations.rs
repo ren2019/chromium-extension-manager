@@ -168,7 +168,14 @@ fn diagnosis(error: &str) -> (&'static str, &'static str) {
         || error.contains("穿越")
     {
         ("产物安全校验失败", "选择可信来源的完整普通文件产物后重试")
-    } else if error.contains("清单") || error.contains("资源") || error.contains("manifest") {
+    } else if error.contains("清单")
+        || error.contains("资源")
+        || error.to_ascii_lowercase().contains("manifest")
+        || error.contains("扩展版本应为")
+        || error.contains("content_scripts")
+        || error.contains("沙盒页面")
+        || error.contains("默认语言")
+    {
         (
             "扩展清单或必要资源无效",
             "选择完整的 Manifest V3 预构建产物后重试",
