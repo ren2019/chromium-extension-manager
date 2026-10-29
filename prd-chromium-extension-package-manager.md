@@ -328,6 +328,8 @@ OpenCLI 的 CLI、OpenCLIApp 和命令插件属于独立组件，不在本 PRD �
 
 ## 15. 实施前需要验证的技术问题
 
+2026-10-29 的[最小验证记录](./docs/validation/minimal-feasibility.md)已覆盖 macOS GPUI 交互、双平台构建和 macOS Chrome 普通 UI 路径的持久安装。下列其余项目保持待验证，不因构建通过而视为跨平台验收完成。
+
 - GPUI/gpui-kit 在 Windows/macOS 的目录选择、中文输入、列表进度和安装包；验证通过前不将 GUI 框架视作最终选定；
 - 目标 Edge/Chrome 版本对 `Extensions.loadUnpacked` 的实际支持情况；
 - 受管配置中扩展 ID 和加载状态的持久化行为；

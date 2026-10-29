@@ -6,7 +6,7 @@
 
 [产品需求文档（PRD v0.3）](./prd-chromium-extension-package-manager.md) 从 Downloads 导入，初始原文保存在首次提交中；设计访谈决策已合入正文，第 17 节汇总当前基线。
 
-设计访谈已收口：核心确定使用 Rust，GUI 优先验证 GPUI/gpui-kit，尚未开始实现或跨平台实测。
+设计访谈已收口：核心确定使用 Rust，GUI 优先验证 GPUI/gpui-kit。最小实验已通过 macOS 交互、双平台构建及 macOS Chrome 持久安装验证；Windows 桌面交互和 Edge 持久性仍待验证，产品实现尚未开始。
 
 ## MVP 范围
 
@@ -23,7 +23,11 @@
 
 ## 实施起点
 
-先验证 PRD 第 15 节列出的技术问题，尤其是目标浏览器对 `Extensions.loadUnpacked` 的支持、扩展 ID 持久化和重载后的版本验证，再确定实现方案。
+先完成 PRD 第 15 节列出的技术验证。当前实验支持“固定安装目录 + 首次手动加载 + 更新后手动重载”的最小路径；磁盘安装版本与生效版本必须分开记录。
+
+- [最小验证结果、证据与剩余检查](./docs/validation/minimal-feasibility.md)
+- [实验代码及运行方法](https://github.com/ren2019/chromium-extension-manager/tree/prototype/gpui-browser-feasibility/prototypes)（仅在实验分支）
+- [Windows / macOS 构建与可下载制品](https://github.com/ren2019/chromium-extension-manager/actions/runs/40826295319)
 
 ## 协作配置
 
