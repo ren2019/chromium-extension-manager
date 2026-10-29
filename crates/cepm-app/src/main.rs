@@ -60,6 +60,7 @@ struct Desktop {
     page: Page,
     panel: Panel,
     add_step: u8,
+    guide_step: u8,
     source_kind: SourceKind,
     source_update_id: Option<String>,
     release_catalog: Option<ReleaseCatalog>,
@@ -71,16 +72,20 @@ struct Desktop {
     remote_directory: Entity<InputState>,
     switcher: bool,
     show_technical: bool,
+    show_versions: bool,
     checked: bool,
     bind_browser: Browser,
     bind_name: Entity<InputState>,
     bind_app: Entity<InputState>,
     bind_path: Entity<InputState>,
     extension_id: Entity<InputState>,
-    version: Entity<InputState>,
     status: String,
     error: bool,
     busy: bool,
+}
+enum PreparedRelease {
+    Ready(Box<PreparedSource>),
+    ChooseRoot(ReleaseArtifact),
 }
 enum PreparedSource {
     New(Preview),
@@ -254,6 +259,7 @@ impl Desktop {
             page: Page::Library,
             panel: Panel::None,
             add_step: 1,
+            guide_step: 1,
             source_kind: SourceKind::Local,
             source_update_id: None,
             release_catalog: None,
@@ -265,13 +271,13 @@ impl Desktop {
             remote_directory: input(window, cx, "仓库内预构建扩展目录，例如 dist/chrome"),
             switcher: false,
             show_technical: false,
+            show_versions: false,
             checked: false,
             bind_browser: Browser::Chrome,
             bind_name: input(window, cx, "例如：个人、工作"),
             bind_app: input(window, cx, "浏览器应用或可执行文件的完整路径"),
             bind_path: input(window, cx, "从浏览器 version 页复制 Profile Path"),
             extension_id: input(window, cx, "从目标浏览器复制 32 位扩展 ID"),
-            version: input(window, cx, "填写浏览器中实际显示的版本"),
             status,
             error,
             busy: false,
@@ -319,13 +325,14 @@ impl Desktop {
             return;
         }
         self.panel = panel;
+        self.guide_step = 1;
         self.checked = false;
         self.show_technical = false;
+        self.show_versions = false;
         self.status.clear();
         self.error = false;
         self.extension_id
             .update(cx, |s, cx| s.set_value("", window, cx));
-        self.version.update(cx, |s, cx| s.set_value("", window, cx));
         if panel == Panel::Guide
             && let Some(id) = self.current_record().and_then(|r| r.extension_id)
         {
@@ -627,7 +634,6 @@ impl Desktop {
         };
         self.extension_id
             .update(cx, |s, cx| s.set_value("", window, cx));
-        self.version.update(cx, |s, cx| s.set_value("", window, cx));
         self.checked = false;
         self.work(
             "正在准备固定安装目录…",
@@ -642,7 +648,9 @@ impl Desktop {
                 v.selected = Some(record.id);
                 v.records = records;
                 v.panel = Panel::Guide;
-                v.status = "文件已准备好，接下来在浏览器完成首次加载".into();
+                v.guide_step = 1;
+                v.show_technical = false;
+                v.status.clear();
             },
         );
     }
@@ -668,16 +676,21 @@ impl Desktop {
         );
     }
     fn confirm(&mut self, cx: &mut Context<Self>) {
-        if !self.checked {
-            self.message(Err("请先在目标配置核对，再勾选确认".into()), "", cx);
+        if self.panel != Panel::Guide || self.guide_step != 3 {
+            self.message(Err("请先在浏览器中完成加载与版本核对".into()), "", cx);
             return;
         }
         let Some(record) = self.current_record() else {
             return;
         };
         let Some(profile) = self.target() else { return };
-        let id = self.extension_id.read(cx).value().trim().to_owned();
-        let version = self.version.read(cx).value().trim().to_owned();
+        let id = record
+            .extension_id
+            .clone()
+            .unwrap_or_else(|| self.extension_id.read(cx).value().trim().to_owned());
+        // The explicit final button attests to this displayed version; this is
+        // still user confirmation, never an automatic browser observation.
+        let version = record.installed_version.clone();
         self.work(
             "正在保存用户确认…",
             OperationStage::Confirm,
@@ -707,12 +720,16 @@ impl Desktop {
             move |m| m.check_update(&CommandGh, &record.id),
             |v, plan| {
                 v.status = if plan.kind() == UpdateKind::Unchanged {
-                    "来源文件与安装版本一致".into()
+                    "没有发现新版本".into()
                 } else {
-                    "请确认版本变更，再准备文件".into()
+                    "发现可用版本".into()
+                };
+                v.panel = if plan.kind() == UpdateKind::Unchanged {
+                    Panel::None
+                } else {
+                    Panel::Update
                 };
                 v.update_plan = Some(plan);
-                v.panel = Panel::Update;
             },
         );
     }
@@ -738,9 +755,11 @@ impl Desktop {
             },
             |v, records| {
                 v.records = records;
-                v.panel = Panel::Detail;
+                v.panel = Panel::Guide;
+                v.guide_step = 1;
+                v.show_technical = false;
                 v.checked = false;
-                v.status = "文件已部署，等待你在浏览器重新加载与核对".into();
+                v.status.clear();
             },
         );
     }
@@ -796,14 +815,28 @@ impl Desktop {
             tag: self.release_tag.clone(),
             asset_id: self.release_asset,
         };
+        let update_id = self.source_update_id.clone();
         self.work(
-            "正在获取 ZIP 并检查产物位置…",
+            "正在下载并检查扩展…",
             OperationStage::Source,
             cx,
-            move |m| m.preview_release(&CommandGh, &source, &selection),
-            |v, artifact| {
-                v.release_artifact = Some(artifact);
-                v.status = "请选择 ZIP 内的完整扩展产物目录".into();
+            move |m| {
+                let artifact = m.preview_release(&CommandGh, &source, &selection)?;
+                if artifact.roots().len() == 1 {
+                    let preview = artifact.select_root(None)?;
+                    Ok(PreparedRelease::Ready(Box::new(prepare_source(
+                        m, preview, update_id,
+                    )?)))
+                } else {
+                    Ok(PreparedRelease::ChooseRoot(artifact))
+                }
+            },
+            |v, result| match result {
+                PreparedRelease::Ready(prepared) => accept_source(v, *prepared),
+                PreparedRelease::ChooseRoot(artifact) => {
+                    v.release_artifact = Some(artifact);
+                    v.status = "发现多个扩展目录，请选择要安装的扩展".into();
+                }
             },
         );
     }
@@ -931,10 +964,8 @@ impl Desktop {
             }
             SourceKind::Release => {
                 content = content
-                    .child(heading("选择发布版本与 ZIP 产物"))
-                    .child(caption(
-                        "支持私有仓库，访问由本机 gh 管理。先选择版本，再确认 ZIP 中的扩展目录。",
-                    ))
+                    .child(heading("从 GitHub 安装"))
+                    .child(caption("输入仓库地址，默认选择最新正式版。"))
                     .child(Input::new(&self.remote_repo).disabled(disabled))
                     .child(
                         Button::new("list-releases")
@@ -964,6 +995,7 @@ impl Desktop {
                                 .selected(self.release_tag.as_ref() == Some(&tag))
                                 .disabled(disabled)
                                 .on_click(cx.listener(move |v, _, _, cx| {
+                                    v.show_versions = false;
                                     v.release_tag = Some(tag.clone());
                                     v.release_asset = v
                                         .release_catalog
@@ -975,14 +1007,35 @@ impl Desktop {
                         );
                     }
                     content = content
-                        .child(caption("发布版本（可选择任意版本）"))
-                        .child(versions);
+                        .child(
+                            Button::new("show-versions")
+                                .ghost()
+                                .label(format!(
+                                    "{} · {}",
+                                    self.release_tag.as_deref().unwrap_or("选择版本"),
+                                    if self.show_versions {
+                                        "收起版本列表"
+                                    } else {
+                                        "更换版本"
+                                    }
+                                ))
+                                .disabled(disabled)
+                                .on_click(cx.listener(|v, _, _, cx| {
+                                    v.show_versions = !v.show_versions;
+                                    cx.notify();
+                                })),
+                        )
+                        .when(self.show_versions, |v| v.child(versions));
                     if let Some(release) = catalog
                         .releases
                         .iter()
                         .find(|r| Some(&r.tag_name) == self.release_tag.as_ref())
                     {
                         for asset in &release.assets {
+                            if release.assets.len() == 1 && self.release_asset == Some(asset.id) {
+                                content = content.child(caption(asset.name.clone()));
+                                continue;
+                            }
                             let id = asset.id;
                             content = content.child(
                                 Button::new(SharedString::from(format!("asset-{id}")))
@@ -1000,7 +1053,7 @@ impl Desktop {
                     content = content.child(
                         Button::new("fetch-release")
                             .primary()
-                            .label("下载并检查所选 ZIP")
+                            .label("继续")
                             .disabled(
                                 disabled
                                     || self.release_tag.is_none()
@@ -1044,9 +1097,17 @@ impl Desktop {
                 m.check_target_updates(&CommandGh, &profile.target())
             },
             |v, checked| {
+                let unchanged = checked
+                    .iter()
+                    .all(|c| c.plan().is_some_and(|p| p.kind() == UpdateKind::Unchanged));
                 v.bulk_checks = checked;
-                v.panel = Panel::Bulk;
-                v.status = "检查完成。只有普通升级可批量准备；其他变更请单独处理。".into();
+                v.panel = if unchanged { Panel::None } else { Panel::Bulk };
+                v.status = if unchanged {
+                    "没有发现新版本"
+                } else {
+                    "检查完成"
+                }
+                .into();
             },
         );
     }
@@ -1230,21 +1291,7 @@ impl Desktop {
                     .disabled(!self.target_ready())
                     .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
             )
-            .child(
-                Button::new("sidebar-copy-manager")
-                    .small()
-                    .ghost()
-                    .label("复制扩展管理页地址")
-                    .disabled(self.target().is_none())
-                    .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))),
-            )
-            .child(caption("若浏览器打开新标签页，请粘贴地址继续。"))
-            .child(caption(format!(
-                "在 {} 中管理启停与权限",
-                self.target_label()
-            )))
             .child(div().flex_1())
-            .child(caption("文件保存在这台电脑\n退出 CEPM 后扩展仍可使用"))
             .into_any_element()
     }
     fn library(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1263,7 +1310,6 @@ impl Desktop {
                     .child(
                         v_flex()
                             .gap_1()
-                            .child(caption("你的浏览器工具箱"))
                             .child(div().text_3xl().font_weight(FontWeight::SEMIBOLD).child(
                                 match self.page {
                                     Page::Library => "我的扩展",
@@ -1271,10 +1317,7 @@ impl Desktop {
                                     Page::History => "操作记录",
                                 },
                             ))
-                            .child(caption(format!(
-                                "{} · 安装、版本与待办独立管理",
-                                self.target_label()
-                            ))),
+                            .child(caption(self.target_label())),
                     )
                     .child(
                         h_flex()
@@ -1500,52 +1543,36 @@ impl Desktop {
                                     .min_w_0()
                                     .gap_1()
                                     .child(
-                                        Button::new(SharedString::from(format!("record-{}", r.id)))
+                                        h_flex().child(
+                                            Button::new(SharedString::from(format!(
+                                                "record-{}",
+                                                r.id
+                                            )))
                                             .label(r.name.clone())
                                             .ghost()
                                             .on_click(cx.listener(move |v, _, w, cx| {
                                                 v.selected = Some(id.clone());
                                                 v.open_panel(Panel::Detail, w, cx);
                                             })),
+                                        ),
                                     )
-                                    .child(caption(r.source.display().to_string())),
+                                    .child(caption(if pending {
+                                        "等待浏览器加载".to_owned()
+                                    } else {
+                                        format!(
+                                            "已安装 · {}",
+                                            r.effective_version
+                                                .as_deref()
+                                                .unwrap_or(&r.installed_version)
+                                        )
+                                    })),
                             )
-                            .child(
-                                v_flex()
-                                    .w(px(125.))
-                                    .child(format!("文件 {}", r.installed_version))
-                                    .child(caption(format!(
-                                        "{}{}",
-                                        if pending {
-                                            "上次确认 "
-                                        } else {
-                                            "浏览器 "
-                                        },
-                                        if pending {
-                                            r.historical_version.as_deref()
-                                        } else {
-                                            r.effective_version.as_deref()
-                                        }
-                                        .unwrap_or("尚未确认")
-                                    ))),
-                            )
-                            .child(badge(
-                                if r.recovery_required {
-                                    "恢复需要处理"
-                                } else if pending {
-                                    "需要你完成"
-                                } else {
-                                    "已确认生效"
-                                },
-                                pending,
-                            ))
+                            .when(r.recovery_required, |row| {
+                                row.child(badge("需要处理", true))
+                            })
                             .child(
                                 Button::new(SharedString::from(format!("action-{}", r.id)))
-                                    .label(if pending {
-                                        "加载并核对"
-                                    } else {
-                                        "查看详情"
-                                    })
+                                    .label(if pending { "继续" } else { "详情" })
                                     .small()
                                     .disabled(disabled)
                                     .on_click(cx.listener(move |v, _, w, cx| {
@@ -1565,10 +1592,7 @@ impl Desktop {
                     })),
             );
         }
-        body.child(caption(
-            "生效版本由你在目标浏览器中核对。文件准备完成后，仍可稍后继续。",
-        ))
-        .into_any_element()
+        body.into_any_element()
     }
     fn panel_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let disabled = self.busy;
@@ -1699,8 +1723,7 @@ impl Desktop {
                         h_flex()
                             .gap_4()
                             .child(badge("1 选择来源", self.add_step == 1))
-                            .child(badge("2 预览版本", self.add_step == 2))
-                            .child(badge("3 确认位置", self.add_step == 3)),
+                            .child(badge("2 确认安装", self.add_step == 2)),
                     );
                 match self.add_step {
                     1 => {
@@ -1719,37 +1742,17 @@ impl Desktop {
                                             .child(caption(origin_description(p.origin()))),
                                     ),
                                 )
-                                .child(caption("CEPM 会复制到独立固定目录。来源移动不会影响安装。"))
+                                .child(caption("安装后需要在浏览器中完成首次加载。"))
                                 .child(
-                                    Button::new("use-preview")
+                                    Button::new("install")
                                         .primary()
-                                        .label("使用此版本 →")
-                                        .on_click(cx.listener(|v, _, _, cx| {
-                                            v.add_step = 3;
-                                            cx.notify();
-                                        })),
+                                        .label("安装")
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(|v, _, w, cx| v.install(w, cx))),
                                 );
                         }
                     }
-                    _ => {
-                        content = content
-                            .child(heading(self.target_label()))
-                            .child(caption(
-                                self.target()
-                                    .map(|p| p.profile_path().display().to_string())
-                                    .unwrap_or_default(),
-                            ))
-                            .child(caption(
-                                "只安装到当前配置。文件准备好后，在浏览器完成一次加载。",
-                            ))
-                            .child(
-                                Button::new("install")
-                                    .primary()
-                                    .label("准备安装文件")
-                                    .disabled(disabled)
-                                    .on_click(cx.listener(|v, _, w, cx| v.install(w, cx))),
-                            );
-                    }
+                    _ => {}
                 }
                 if self.add_step > 1 {
                     content = content.child(
@@ -1776,35 +1779,39 @@ impl Desktop {
                     }
                     content = content
                         .child(heading(r.name.clone()))
-                        .child(badge(profile.label(), false))
-                        .child(
-                            div()
-                                .p_4()
-                                .rounded_lg()
-                                .bg(rgb(if pending { 0xfcf3e3 } else { 0xeaf4ef }))
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(format!("磁盘安装版本 {}", r.installed_version))
-                                        .child(caption(format!(
-                                            "{}：{}",
-                                            if pending {
-                                                "历史确认（当前待核对）"
-                                            } else {
-                                                "生效版本"
-                                            },
-                                            if pending {
-                                                r.historical_version.as_deref()
-                                            } else {
-                                                r.effective_version.as_deref()
-                                            }
-                                            .unwrap_or("尚未确认")
-                                        ))),
-                                ),
-                        );
+                        .child(badge(profile.label(), false));
                     if self.panel == Panel::Detail {
                         content = content
-                            .child(caption(format!("来源：{}", r.source.display())))
+                            .child(caption(if pending {
+                                format!("{} 已准备好，等待浏览器加载", r.installed_version)
+                            } else {
+                                format!(
+                                    "已安装 · {} · 你已核对",
+                                    r.effective_version
+                                        .as_deref()
+                                        .unwrap_or(&r.installed_version)
+                                )
+                            }))
+                            .when(!pending, |v| {
+                                v.child(
+                                    Button::new("check-update")
+                                        .primary()
+                                        .label("检查更新")
+                                        .disabled(disabled || !self.target_ready())
+                                        .on_click(cx.listener(|v, _, _, cx| v.check_update(cx))),
+                                )
+                            })
+                            .when(pending && !r.recovery_required, |v| {
+                                v.child(
+                                    Button::new("detail-guide")
+                                        .primary()
+                                        .label("继续安装")
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(|v, _, w, cx| {
+                                            v.open_panel(Panel::Guide, w, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("detail-native")
                                     .label("在浏览器中管理 ↗")
@@ -1812,53 +1819,12 @@ impl Desktop {
                                     .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
                             )
                             .child(
-                                Button::new("detail-copy-manager")
-                                    .label("复制扩展管理页地址")
-                                    .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))),
-                            )
-                            .child(caption("若只打开了新标签页，请在该配置窗口粘贴地址继续。"))
-                            .child(
-                                Button::new("check-update")
-                                    .label("检查来源与版本")
-                                    .disabled(disabled || !self.target_ready())
-                                    .on_click(cx.listener(|v, _, _, cx| v.check_update(cx))),
-                            )
-                            .child(
-                                Button::new("choose-local-version")
-                                    .label("选择其他本地版本…")
-                                    .disabled(disabled || !self.target_ready())
-                                    .on_click(
-                                        cx.listener(|v, _, _, cx| v.choose_local_version(cx)),
-                                    ),
-                            )
-                            .when(r.origin.is_some(), |v| {
-                                v.child(
-                                    Button::new("choose-remote-version")
-                                        .label("选择其他远程版本…")
-                                        .disabled(disabled || !self.target_ready())
-                                        .on_click(cx.listener(|v, _, w, cx| {
-                                            v.choose_remote_version(w, cx)
-                                        })),
-                                )
-                            })
-                            .when(pending && !r.recovery_required, |v| {
-                                v.child(
-                                    Button::new("detail-guide")
-                                        .disabled(disabled)
-                                        .primary()
-                                        .label("继续加载与核对")
-                                        .on_click(cx.listener(|v, _, w, cx| {
-                                            v.open_panel(Panel::Guide, w, cx)
-                                        })),
-                                )
-                            })
-                            .child(
                                 Button::new("technical")
                                     .ghost()
                                     .label(if self.show_technical {
-                                        "收起安装信息"
+                                        "收起更多选项"
                                     } else {
-                                        "安装位置与技术信息 ⌄"
+                                        "更多选项 ⌄"
                                     })
                                     .on_click(cx.listener(|v, _, _, cx| {
                                         v.show_technical = !v.show_technical;
@@ -1866,92 +1832,163 @@ impl Desktop {
                                     })),
                             )
                             .when(self.show_technical, |v| {
-                                v.child(caption(format!("固定目录：{}", r.install_dir.display())))
-                                    .child(caption(format!(
-                                        "扩展 ID：{}",
-                                        r.extension_id.as_deref().unwrap_or("首次加载后核对")
-                                    )))
-                                    .when(r.origin.is_some(), |v| {
-                                        v.child(caption(origin_description(r.origin.as_ref())))
-                                    })
-                                    .child(caption(format!(
-                                        "配置目录：{}",
-                                        profile.profile_path().display()
-                                    )))
+                                v.child(
+                                    Button::new("detail-copy-manager")
+                                        .label("页面没打开？复制地址")
+                                        .on_click(
+                                            cx.listener(|v, _, _, cx| v.copy_management_url(cx)),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("choose-local-version")
+                                        .label("从本地切换版本…")
+                                        .disabled(disabled || !self.target_ready())
+                                        .on_click(
+                                            cx.listener(|v, _, _, cx| v.choose_local_version(cx)),
+                                        ),
+                                )
+                                .when(r.origin.is_some(), |v| {
+                                    v.child(
+                                        Button::new("choose-remote-version")
+                                            .label("选择其他版本…")
+                                            .disabled(disabled || !self.target_ready())
+                                            .on_click(cx.listener(|v, _, w, cx| {
+                                                v.choose_remote_version(w, cx)
+                                            })),
+                                    )
+                                })
+                                .child(caption(format!("来源：{}", r.source.display())))
+                                .child(caption(format!(
+                                    "文件版本：{} · 上次确认：{}",
+                                    r.installed_version,
+                                    if pending {
+                                        r.historical_version.as_deref()
+                                    } else {
+                                        r.effective_version.as_deref()
+                                    }
+                                    .unwrap_or("尚未确认")
+                                )))
+                                .child(caption(format!("固定目录：{}", r.install_dir.display())))
+                                .child(caption(format!(
+                                    "扩展 ID：{}",
+                                    r.extension_id.as_deref().unwrap_or("首次加载后核对")
+                                )))
+                                .when(r.origin.is_some(), |v| {
+                                    v.child(caption(origin_description(r.origin.as_ref())))
+                                })
+                                .child(caption(format!(
+                                    "配置目录：{}",
+                                    profile.profile_path().display()
+                                )))
                             });
                     } else {
-                        if pending && r.generation > 1 && !r.recovery_required {
-                            content = content.child(
-                                Button::new("load-failed")
-                                    .label("加载失败，恢复上一份文件")
-                                    .disabled(disabled)
-                                    .on_click(cx.listener(|v, _, w, cx| {
-                                        v.open_panel(Panel::Restore, w, cx)
-                                    })),
-                            );
-                        }
-                        let path = r.install_dir.display().to_string();
-                        let url = profile.management_url().to_string();
-                        content = content
-                            .child(heading("1  打开目标配置的扩展管理页"))
-                            .child(caption("请先确认窗口属于上方配置。若出现新标签页，复制地址并在该窗口地址栏粘贴。"))
-                            .child(
-                                h_flex()
-                                    .gap_2()
+                        let first_load = r.extension_id.is_none();
+                        content =
+                            content.child(caption(format!("第 {} 步，共 3 步", self.guide_step)));
+                        match self.guide_step {
+                            1 => {
+                                content = content
+                                    .child(heading(if first_load {
+                                        "在浏览器里完成首次安装"
+                                    } else {
+                                        "去浏览器重新加载一下"
+                                    }))
+                                    .child(caption(
+                                        "接下来将在上方配置中操作。完成后回到这里继续。",
+                                    ))
                                     .child(
                                         Button::new("guide-native")
                                             .primary()
-                                            .label("打开浏览器扩展管理页 ↗")
-                                            .disabled(!self.target_ready())
-                                            .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
-                                    )
-                                    .child(Button::new("copy-url").label("复制地址").on_click(
-                                        move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                url.clone(),
-                                            ))
-                                        },
-                                    )),
-                            )
-                            .child(heading(if r.extension_id.is_none() {
-                                "2  开启开发者模式，加载已解压的扩展"
-                            } else {
-                                "2  找到此扩展并点击重新加载"
-                            }))
-                            .child(caption(if r.extension_id.is_none() {
-                                "选择下方固定安装目录；后续更新继续使用它。"
-                            } else {
-                                "保存正在进行的工作。CEPM 不会关闭或重启浏览器。"
-                            }))
-                            .child(Button::new("copy-path").label("复制固定安装目录").on_click(
-                                move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))
-                                },
-                            ))
-                            .child(heading("3  核对实际显示的版本与身份"))
-                            .child(caption(format!(
-                                "应显示 {}；核对后记录为用户确认。",
-                                r.installed_version
-                            )))
-                            .child(Input::new(&self.extension_id).disabled(disabled))
-                            .child(Input::new(&self.version).disabled(disabled))
+                                            .label("打开浏览器 →")
+                                            .disabled(disabled || !self.target_ready())
+                                            .on_click(cx.listener(|v, _, _, cx| {
+                                                v.open_native(cx);
+                                                if !v.error {
+                                                    v.guide_step = 2;
+                                                    v.status.clear();
+                                                }
+                                                cx.notify();
+                                            })),
+                                    );
+                            }
+                            2 => {
+                                content = content
+                                    .child(heading(if first_load { "加载扩展文件夹" } else { "点击扩展旁的重新加载 ↻" }))
+                                    .child(caption(if first_load {
+                                        "开启「开发者模式」，点击「加载已解压的扩展程序」，选择下方文件夹。"
+                                    } else { "在扩展管理页找到这个扩展，点击重新加载，然后回到这里。" }))
+                                    .when(first_load, |v| {
+                                        let path = r.install_dir.display().to_string();
+                                        v.child(Button::new("copy-path").label("复制文件夹位置")
+                                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))))
+                                    })
+                                    .child(Button::new("guide-next").primary().label("已加载，下一步 →")
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(|v, _, _, cx| { v.guide_step = 3; v.show_technical = false; cx.notify(); })));
+                            }
+                            _ => {
+                                content = content
+                                    .child(heading(format!("浏览器中是否已显示 {}？", r.installed_version)))
+                                    .child(caption("确认后将记为你已核对。版本不一致时，请先重新加载。"))
+                                    .when(first_load, |v| v
+                                        .child(caption("首次安装：复制扩展 ID，以便以后识别；后续更新无需再填。"))
+                                        .child(Input::new(&self.extension_id).disabled(disabled)))
+                                    .child(Button::new("confirm").primary().label("是，已完成")
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(|v, _, _, cx| v.confirm(cx))));
+                            }
+                        }
+                        content = content
+                            .when(self.guide_step > 1, |v| {
+                                v.child(
+                                    Button::new("guide-back")
+                                        .ghost()
+                                        .label("上一步")
+                                        .disabled(disabled)
+                                        .on_click(cx.listener(|v, _, _, cx| {
+                                            v.guide_step -= 1;
+                                            v.show_technical = false;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
                             .child(
-                                Checkbox::new("confirm-check")
-                                    .label(format!("我已在 {} 完成操作并核对", profile.label()))
-                                    .checked(self.checked)
+                                Button::new("guide-help")
+                                    .ghost()
+                                    .label(if self.show_technical {
+                                        "收起帮助"
+                                    } else {
+                                        "遇到问题？"
+                                    })
                                     .disabled(disabled)
-                                    .on_click(cx.listener(|v, value, _, cx| {
-                                        v.checked = *value;
+                                    .on_click(cx.listener(|v, _, _, cx| {
+                                        v.show_technical = !v.show_technical;
                                         cx.notify();
                                     })),
                             )
-                            .child(
-                                Button::new("confirm")
-                                    .primary()
-                                    .label("确认已生效")
-                                    .disabled(disabled)
-                                    .on_click(cx.listener(|v, _, _, cx| v.confirm(cx))),
-                            );
+                            .when(self.show_technical, |v| {
+                                v.child(caption(
+                                    "只打开了新标签页？复制下面地址，在该浏览器窗口粘贴打开。",
+                                ))
+                                .child(
+                                    Button::new("copy-url").label("复制扩展页地址").on_click(
+                                        cx.listener(|v, _, _, cx| v.copy_management_url(cx)),
+                                    ),
+                                )
+                                .when(
+                                    pending && r.generation > 1 && !r.recovery_required,
+                                    |v| {
+                                        v.child(
+                                            Button::new("load-failed")
+                                                .label("加载失败，恢复旧版")
+                                                .disabled(disabled)
+                                                .on_click(cx.listener(|v, _, w, cx| {
+                                                    v.open_panel(Panel::Restore, w, cx)
+                                                })),
+                                        )
+                                    },
+                                )
+                            });
                     }
                 }
             }
@@ -1963,10 +2000,16 @@ impl Desktop {
                         UpdateKind::Redeploy => "同版本重新部署",
                         UpdateKind::Unchanged => "已经是当前版本",
                     };
-                    content = content.child(heading(r.name)).child(badge(self.target_label(), false))
-                        .child(heading(format!("{} → {}", r.installed_version, plan.version())))
+                    content = content
+                        .child(heading(r.name))
+                        .child(badge(self.target_label(), false))
+                        .child(heading(format!(
+                            "{} → {}",
+                            r.installed_version,
+                            plan.version()
+                        )))
                         .child(caption(format!("{kind} · {}", plan.source().display())))
-                        .child(caption("保留固定安装目录和上一份文件。准备完成后，请在浏览器重新加载；未经核对不会显示已生效。"));
+                        .child(caption("更新后需要在浏览器重新加载。"));
                     if matches!(plan.kind(), UpdateKind::Downgrade | UpdateKind::Redeploy) {
                         content = content.child(
                             Checkbox::new("version-choice")
@@ -1982,7 +2025,11 @@ impl Desktop {
                     content = content.child(
                         Button::new("apply-update")
                             .primary()
-                            .label(format!("确认{kind}"))
+                            .label(if plan.kind() == UpdateKind::Upgrade {
+                                "更新".to_owned()
+                            } else {
+                                format!("确认{kind}")
+                            })
                             .disabled(
                                 disabled
                                     || plan.kind() == UpdateKind::Unchanged
@@ -2037,7 +2084,7 @@ impl Desktop {
                     content = content.child(
                         Button::new("apply-all")
                             .primary()
-                            .label(format!("准备 {upgrades} 项升级"))
+                            .label(format!("更新 {upgrades} 个扩展"))
                             .disabled(disabled || upgrades == 0)
                             .on_click(cx.listener(|v, _, _, cx| v.apply_all(cx))),
                     );
@@ -2085,7 +2132,7 @@ impl Render for Desktop {
             Panel::Legacy => "定位旧安装",
             Panel::Add => "添加扩展",
             Panel::Detail => "扩展详情",
-            Panel::Guide => "完成浏览器加载与核对",
+            Panel::Guide => "完成安装",
             Panel::Update => "确认版本变更",
             Panel::Restore => "加载失败与恢复",
             Panel::Bulk => "当前配置的更新",
