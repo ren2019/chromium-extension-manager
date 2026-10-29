@@ -1,5 +1,6 @@
 use cepm_core::RemoteOrigin;
 use cepm_core::bulk::{BulkResult, BulkStatus, CheckedUpdate};
+use cepm_core::operations::{OperationRecord, OperationStage};
 use cepm_core::profiles::{
     BrowserLocation, BrowserProfile, ProfileBook, ProfileCandidate, discover_profiles,
 };
@@ -50,6 +51,7 @@ struct Desktop {
     profiles: Option<ProfileBook>,
     candidates: Vec<ProfileCandidate>,
     records: Vec<Installation>,
+    operations: Vec<OperationRecord>,
     selected: Option<String>,
     preview: Option<Preview>,
     update_plan: Option<UpdatePlan>,
@@ -142,6 +144,19 @@ fn origin_description(origin: Option<&RemoteOrigin>) -> String {
         None => "本地目录".into(),
     }
 }
+fn operation_time(at: u64) -> String {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(at);
+    match elapsed {
+        0..60 => "刚刚".into(),
+        60..3600 => format!("{} 分钟前", elapsed / 60),
+        3600..86400 => format!("{} 小时前", elapsed / 3600),
+        _ => format!("{} 天前", elapsed / 86400),
+    }
+}
 fn caption(text: impl Into<SharedString>) -> Div {
     div().text_sm().text_color(rgb(MUTED)).child(text.into())
 }
@@ -206,12 +221,31 @@ impl Desktop {
                 Vec::new()
             }
         };
+        let operations = profiles
+            .as_ref()
+            .and_then(|p| p.selected())
+            .and_then(|p| {
+                manager.as_ref().map(|m| {
+                    m.lock()
+                        .map_err(|_| "操作记录不可用".to_string())
+                        .and_then(|m| m.operation_history(&p.target()))
+                })
+            })
+            .map(|result| match result {
+                Ok(history) => history,
+                Err(error) => {
+                    status = error;
+                    Vec::new()
+                }
+            })
+            .unwrap_or_default();
         let error = !status.is_empty();
         Self {
             manager,
             profiles,
             candidates,
             records,
+            operations,
             selected: None,
             preview: None,
             update_plan: None,
@@ -281,6 +315,9 @@ impl Desktop {
         cx.notify();
     }
     fn open_panel(&mut self, panel: Panel, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         self.panel = panel;
         self.checked = false;
         self.show_technical = false;
@@ -297,21 +334,51 @@ impl Desktop {
         }
         cx.notify();
     }
+    fn clear_target_work(&mut self) {
+        self.selected = None;
+        self.preview = None;
+        self.update_plan = None;
+        self.bulk_checks.clear();
+        self.bulk_results.clear();
+        self.source_update_id = None;
+        self.release_catalog = None;
+        self.release_tag = None;
+        self.release_asset = None;
+        self.release_artifact = None;
+        self.operations.clear();
+        self.panel = Panel::None;
+        self.switcher = false;
+        self.page = Page::Library;
+        self.checked = false;
+    }
+    fn refresh_history(&mut self) -> cepm_core::Result<()> {
+        if let (Some(manager), Some(profile)) = (&self.manager, self.target()) {
+            self.operations = manager
+                .lock()
+                .map_err(|_| "操作记录不可用")?
+                .operation_history(&profile.target())?;
+        }
+        Ok(())
+    }
     fn select_profile(&mut self, id: &str, cx: &mut Context<Self>) {
-        let result = self
+        if self.busy {
+            return;
+        }
+        let mut result = self
             .profiles
             .as_mut()
             .ok_or("配置偏好不可用".into())
             .and_then(|p| p.select(id));
         if result.is_ok() {
-            self.selected = None;
-            self.panel = Panel::None;
-            self.switcher = false;
-            self.page = Page::Library;
+            self.clear_target_work();
+            result = self.refresh_history();
         }
         self.message(result, "", cx);
     }
     fn pin(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
         let result = self
             .profiles
             .as_mut()
@@ -323,7 +390,10 @@ impl Desktop {
         self.message(result, "", cx);
     }
     fn bind_candidate(&mut self, candidate: ProfileCandidate, cx: &mut Context<Self>) {
-        let result = self
+        if self.busy {
+            return;
+        }
+        let mut result = self
             .profiles
             .as_mut()
             .ok_or("配置偏好不可用".into())
@@ -337,8 +407,8 @@ impl Desktop {
                 book.select(&p.id)
             });
         if result.is_ok() {
-            self.panel = Panel::None;
-            self.switcher = false;
+            self.clear_target_work();
+            result = self.refresh_history();
         }
         self.message(result, "已绑定具体浏览器配置。首次加载请核对目标窗口", cx);
     }
@@ -394,6 +464,7 @@ impl Desktop {
     fn work<T: Send + 'static>(
         &mut self,
         label: &str,
+        stage: OperationStage,
         cx: &mut Context<Self>,
         operation: impl FnOnce(&mut Manager) -> cepm_core::Result<T> + Send + 'static,
         apply: impl FnOnce(&mut Self, T) + 'static,
@@ -401,7 +472,18 @@ impl Desktop {
         let Some(manager) = self.manager.clone() else {
             return;
         };
+        if self.busy {
+            return;
+        }
+        let target = self.target().map(|p| p.target());
+        let operation_target = target.clone();
+        let installation_id = if self.panel == Panel::Add {
+            self.source_update_id.clone()
+        } else {
+            self.selected.clone()
+        };
         self.busy = true;
+        self.switcher = false;
         self.error = false;
         self.status = label.into();
         cx.notify();
@@ -411,14 +493,37 @@ impl Desktop {
                     let mut m = manager
                         .lock()
                         .map_err(|_| "操作异常，请重启后检查记录".to_string())?;
-                    let result = operation(&mut m);
+                    let mut result = operation(&mut m);
+                    if let (Some(target), Err(error)) = (&operation_target, &result)
+                        && !(stage == OperationStage::Check && installation_id.is_some())
+                        && let Err(log_error) = m.record_operation(
+                            target,
+                            installation_id.as_deref(),
+                            stage,
+                            Err(error),
+                        )
+                    {
+                        result = Err(format!("{error}；{log_error}"));
+                    }
+                    let history = operation_target
+                        .as_ref()
+                        .map(|t| m.operation_history(t))
+                        .transpose()?;
                     let refreshed = if result.is_err() { m.list().ok() } else { None };
-                    Ok::<_, String>((result, refreshed))
+                    Ok::<_, String>((result, refreshed, history))
                 })
                 .await;
             this.update(cx, |v, cx| {
+                if v.target().map(|p| p.target()) != target {
+                    v.busy = false;
+                    cx.notify();
+                    return;
+                }
                 let result = match result {
-                    Ok((result, refreshed)) => {
+                    Ok((result, refreshed, history)) => {
+                        if let Some(history) = history {
+                            v.operations = history;
+                        }
                         if let Some(records) = refreshed {
                             v.records = records;
                         }
@@ -456,6 +561,7 @@ impl Desktop {
                     let path = folder.path().to_path_buf();
                     v.work(
                         "正在复制与校验扩展产物…",
+                        OperationStage::Source,
                         cx,
                         move |m| m.preview_local(&path),
                         |v, p| {
@@ -491,6 +597,7 @@ impl Desktop {
                     let path = folder.path().to_path_buf();
                     v.work(
                         "正在检查所选版本…",
+                        OperationStage::Source,
                         cx,
                         move |m| {
                             let preview = m.preview_local(&path)?;
@@ -524,6 +631,7 @@ impl Desktop {
         self.checked = false;
         self.work(
             "正在准备固定安装目录…",
+            OperationStage::Deploy,
             cx,
             move |m| {
                 target.validate_location()?;
@@ -546,6 +654,7 @@ impl Desktop {
         let Some(profile) = self.target() else { return };
         self.work(
             "正在定位旧安装…",
+            OperationStage::Bind,
             cx,
             move |m| {
                 m.bind_legacy_target(&id, &profile)?;
@@ -571,6 +680,7 @@ impl Desktop {
         let version = self.version.read(cx).value().trim().to_owned();
         self.work(
             "正在保存用户确认…",
+            OperationStage::Confirm,
             cx,
             move |m| {
                 profile.validate_location()?;
@@ -592,14 +702,9 @@ impl Desktop {
         self.checked = false;
         self.work(
             "正在读取来源并检查版本…",
+            OperationStage::Check,
             cx,
-            move |m| match record.origin {
-                Some(RemoteOrigin::GitHubRelease { .. }) => m.check_release(&CommandGh, &record.id),
-                Some(RemoteOrigin::GitHubDirectory { .. }) => {
-                    m.check_repository(&CommandGh, &record.id)
-                }
-                None => m.check_local(&record.id),
-            },
+            move |m| m.check_update(&CommandGh, &record.id),
             |v, plan| {
                 v.status = if plan.kind() == UpdateKind::Unchanged {
                     "来源文件与安装版本一致".into()
@@ -623,6 +728,7 @@ impl Desktop {
         let Some(profile) = self.target() else { return };
         self.work(
             "正在准备 → 备份旧文件 → 部署文件…",
+            OperationStage::Deploy,
             cx,
             move |m| {
                 profile.validate_location()?;
@@ -647,6 +753,7 @@ impl Desktop {
         };
         self.work(
             "正在恢复上一份文件…",
+            OperationStage::Recover,
             cx,
             move |m| {
                 m.report_load_failure(&record.id, record.generation)?;
@@ -666,6 +773,7 @@ impl Desktop {
         self.release_artifact = None;
         self.work(
             "正在通过 gh 获取发布版本…",
+            OperationStage::Source,
             cx,
             move |m| m.list_releases(&CommandGh, &source),
             |v, catalog| {
@@ -690,6 +798,7 @@ impl Desktop {
         };
         self.work(
             "正在获取 ZIP 并检查产物位置…",
+            OperationStage::Source,
             cx,
             move |m| m.preview_release(&CommandGh, &source, &selection),
             |v, artifact| {
@@ -705,6 +814,7 @@ impl Desktop {
         let update_id = self.source_update_id.clone();
         self.work(
             "正在冻结与校验扩展产物…",
+            OperationStage::Source,
             cx,
             move |m| {
                 let preview = artifact.select_root(Some(&root))?;
@@ -720,6 +830,7 @@ impl Desktop {
         let update_id = self.source_update_id.clone();
         self.work(
             "正在解析引用并获取完整扩展目录…",
+            OperationStage::Source,
             cx,
             move |m| {
                 let preview =
@@ -920,11 +1031,13 @@ impl Desktop {
         content.into_any_element()
     }
     fn check_all(&mut self, cx: &mut Context<Self>) {
+        self.selected = None;
         let Some(profile) = self.target() else { return };
         self.bulk_checks.clear();
         self.bulk_results.clear();
         self.work(
             "正在逐项检查当前配置的来源…",
+            OperationStage::Check,
             cx,
             move |m| {
                 profile.validate_location()?;
@@ -942,6 +1055,7 @@ impl Desktop {
         let checked = std::mem::take(&mut self.bulk_checks);
         self.work(
             "正在逐项备份与部署；每项独立保留结果…",
+            OperationStage::Deploy,
             cx,
             move |m| {
                 profile.validate_location()?;
@@ -1033,6 +1147,8 @@ impl Desktop {
                     let active = self.target().is_some_and(|t| t.id == p.id);
                     menu = menu.child(
                         h_flex()
+                            .w_full()
+                            .min_w_0()
                             .gap_1()
                             .child(
                                 Button::new(SharedString::from(format!("target-{}", p.id)))
@@ -1043,6 +1159,10 @@ impl Desktop {
                                     ))
                                     .small()
                                     .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .truncate()
+                                    .disabled(self.busy)
                                     .on_click(
                                         cx.listener(move |v, _, _, cx| v.select_profile(&id, cx)),
                                     ),
@@ -1056,6 +1176,9 @@ impl Desktop {
                                         p.label()
                                     ))
                                     .small()
+                                    .w(px(28.))
+                                    .flex_shrink_0()
+                                    .disabled(self.busy)
                                     .on_click(cx.listener(move |v, _, _, cx| v.pin(&pin_id, cx))),
                             ),
                     );
@@ -1066,6 +1189,7 @@ impl Desktop {
                     Button::new("bind-profile")
                         .label("＋ 定位浏览器配置")
                         .small()
+                        .disabled(self.busy)
                         .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Bind, w, cx))),
                 )
                 .child(caption("记住上次选择 · ☆ 可置顶多个"));
@@ -1233,6 +1357,62 @@ impl Desktop {
                 .into_any_element();
         }
         let records = self.scoped();
+        if self.page == Page::History {
+            let mut history = v_flex()
+                .id("operation-history")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .gap_2();
+            for operation in &self.operations {
+                let name = operation
+                    .installation_id
+                    .as_ref()
+                    .and_then(|id| records.iter().find(|r| &r.id == id))
+                    .map(|r| r.name.as_str())
+                    .unwrap_or("当前配置的来源操作");
+                history = history.child(
+                    v_flex()
+                        .py_3()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(rgb(BORDER))
+                        .child(div().font_weight(FontWeight::MEDIUM).child(format!(
+                            "{} · {} · {}",
+                            name,
+                            operation.stage.label(),
+                            operation.status.label()
+                        )))
+                        .child(caption(operation.reason.clone()))
+                        .child(caption(operation.next_step.clone()))
+                        .child(caption(operation_time(operation.at))),
+                );
+            }
+            for record in &records {
+                history = history.child(
+                    v_flex()
+                        .py_3()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(rgb(BORDER))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(record.name.clone()),
+                        )
+                        .child(caption(record.last_operation.clone())),
+                );
+            }
+            if self.operations.is_empty() && records.is_empty() {
+                history = history.child(caption("当前配置还没有操作记录"));
+            }
+            return body
+                .child(caption(
+                    "保留最近 100 条脱敏操作结果；文件状态和浏览器确认分别记录。",
+                ))
+                .child(history)
+                .into_any_element();
+        }
         let visible: Vec<_> = records
             .iter()
             .filter(|r| self.page != Page::Attention || r.verification == Verification::Pending)
@@ -1297,25 +1477,6 @@ impl Desktop {
                         let id = r.id.clone();
                         let guide_id = r.id.clone();
                         let pending = r.verification == Verification::Pending;
-                        if self.page == Page::History {
-                            return v_flex()
-                                .py_4()
-                                .gap_1()
-                                .border_b_1()
-                                .border_color(rgb(BORDER))
-                                .child(div().font_weight(FontWeight::MEDIUM).child(r.name))
-                                .child(caption(r.last_operation.clone()))
-                                .child(caption(format!(
-                                    "文件 {} · {}",
-                                    r.installed_version,
-                                    if pending {
-                                        "等待浏览器核对"
-                                    } else {
-                                        "用户已确认"
-                                    }
-                                )))
-                                .into_any_element();
-                        }
                         h_flex()
                             .gap_4()
                             .py_5()

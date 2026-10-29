@@ -124,6 +124,20 @@ fn mixed_sources_are_scoped_and_each_failure_preserves_other_successes() {
     );
     drop(manager);
     let manager = Manager::open(&root).unwrap();
+    let history = manager.operation_history(&own).unwrap();
+    for id in [
+        &local_record.id,
+        &release_record.id,
+        &repo_record.id,
+        &missing_record.id,
+    ] {
+        assert!(
+            history
+                .iter()
+                .any(|r| r.installation_id.as_ref() == Some(id)
+                    && r.stage == cepm_core::operations::OperationStage::Deploy)
+        );
+    }
     let records = manager.list().unwrap();
     for id in [local_record.id, release_record.id] {
         let record = records.iter().find(|r| r.id == id).unwrap();

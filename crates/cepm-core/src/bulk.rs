@@ -1,6 +1,7 @@
 //! Profile-scoped orchestration; each installation keeps its own transaction and result.
 use crate::{
-    Installation, Manager, RemoteOrigin, Result, Target, UpdateKind, UpdatePlan, remote::Gh,
+    Installation, Manager, Result, Target, UpdateKind, UpdatePlan, operations::OperationStage,
+    remote::Gh,
 };
 
 pub struct CheckedUpdate {
@@ -45,13 +46,7 @@ impl Manager {
             .into_iter()
             .filter(|r| &r.target == target)
             .map(|record| {
-                let result = match record.origin {
-                    Some(RemoteOrigin::GitHubRelease { .. }) => self.check_release(gh, &record.id),
-                    Some(RemoteOrigin::GitHubDirectory { .. }) => {
-                        self.check_repository(gh, &record.id)
-                    }
-                    None => self.check_local(&record.id),
-                };
+                let result = self.check_update(gh, &record.id);
                 Ok(CheckedUpdate {
                     id: record.id,
                     name: record.name,
@@ -89,10 +84,36 @@ impl Manager {
                         )),
                     }
                 });
+                let mut status = result.unwrap_or_else(BulkStatus::Failed);
+                if self
+                    .record(&check.id)
+                    .is_ok_and(|record| &record.target == target)
+                {
+                    let saved = match &status {
+                        BulkStatus::Skipped(_) => self.record_skipped(target, &check.id),
+                        BulkStatus::Failed(error) => self.record_operation(
+                            target,
+                            Some(&check.id),
+                            OperationStage::Deploy,
+                            Err(error),
+                        ),
+                        BulkStatus::Deployed(_) => self.record_operation(
+                            target,
+                            Some(&check.id),
+                            OperationStage::Deploy,
+                            Ok(()),
+                        ),
+                    };
+                    if let Err(error) = saved {
+                        status = BulkStatus::Failed(format!(
+                            "操作已结束，但诊断记录保存失败：{error}。请查看安装状态"
+                        ));
+                    }
+                }
                 BulkResult {
                     id: check.id,
                     name: check.name,
-                    status: result.unwrap_or_else(BulkStatus::Failed),
+                    status,
                 }
             })
             .collect()
