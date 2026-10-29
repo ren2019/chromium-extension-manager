@@ -189,3 +189,42 @@ fn binding_rejects_empty_directories_and_user_data_roots() {
     assert!(book.bind(Browser::Chrome, "empty", &app, &empty).is_err());
     assert!(book.profiles().is_empty());
 }
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_app_handoff_uses_system_launcher_with_exact_browser_and_profile_arguments() {
+    let temp = tempfile::tempdir().unwrap();
+    let bundle = temp.path().join("Specific Browser.app");
+    let executable = bundle.join("Contents/MacOS/Browser");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(&executable, "fixture").unwrap();
+    let profile = temp.path().join("isolated browser data/Profile 2");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(profile.join("Preferences"), "{}").unwrap();
+    let mut book = ProfileBook::open(&temp.path().join("cepm")).unwrap();
+    let bound = book
+        .bind(Browser::Chrome, "验收", &executable, &profile)
+        .unwrap();
+    let request = bound.management_request().unwrap();
+    assert_eq!(
+        request.application,
+        std::path::PathBuf::from("/usr/bin/open")
+    );
+    assert_eq!(
+        request.arguments,
+        vec![
+            std::ffi::OsString::from("-n"),
+            "-a".into(),
+            bundle.canonicalize().unwrap().into_os_string(),
+            "--args".into(),
+            format!(
+                "--user-data-dir={}",
+                profile.parent().unwrap().canonicalize().unwrap().display()
+            )
+            .into(),
+            "--profile-directory=Profile 2".into(),
+            "--new-window".into(),
+            "chrome://extensions".into(),
+        ]
+    );
+}

@@ -291,14 +291,39 @@ impl BrowserProfile {
         self.validate_location()?;
         let mut data = std::ffi::OsString::from("--user-data-dir=");
         data.push(&self.user_data_dir);
+        let arguments = vec![
+            data,
+            format!("--profile-directory={}", self.profile_directory).into(),
+            "--new-window".into(),
+            self.management_url().into(),
+        ];
+        // Let LaunchServices own a macOS app's lifecycle and normal application launch context.
+        // The explicit bundle and --args retain the exact browser/Profile binding; no default URL handler.
+        #[cfg(target_os = "macos")]
+        if let Some(macos) = self.application.parent()
+            && macos.file_name().is_some_and(|name| name == "MacOS")
+            && let Some(contents) = macos.parent()
+            && contents.file_name().is_some_and(|name| name == "Contents")
+            && let Some(bundle) = contents.parent()
+            && bundle
+                .extension()
+                .is_some_and(|extension| extension == "app")
+        {
+            let mut launch_arguments = vec![
+                "-n".into(),
+                "-a".into(),
+                bundle.as_os_str().to_owned(),
+                "--args".into(),
+            ];
+            launch_arguments.extend(arguments);
+            return Ok(ManagementRequest {
+                application: "/usr/bin/open".into(),
+                arguments: launch_arguments,
+            });
+        }
         Ok(ManagementRequest {
             application: self.application.clone(),
-            arguments: vec![
-                data,
-                format!("--profile-directory={}", self.profile_directory).into(),
-                "--new-window".into(),
-                self.management_url().into(),
-            ],
+            arguments,
         })
     }
 }
