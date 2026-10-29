@@ -42,6 +42,23 @@ Agent 入口为 [AGENTS.md](./AGENTS.md)，具体约定见：
 
 这些配置可直接编辑。术语表和架构决策记录在实际需要时创建。
 
+## 本地开发
+
+需要 Rust 工具链；GPUI 的原生依赖以目标系统为准。本机 macOS 使用 Command Line Tools 已可构建。
+
+```sh
+cargo run -p cepm-app --locked
+```
+
+当前开发切片支持本地目录预览、固定目录安装和用户核对确认。更新、GitHub 来源及批量处理由后续任务实现。应用默认使用操作系统的用户应用数据目录；可用 `CEPM_DATA_DIR` 指定独立测试数据目录。
+
+```sh
+CEPM_DATA_DIR="$PWD/.scratch/app-data" cargo run -p cepm-app --locked
+cargo test -p cepm-core --locked
+```
+
+选择完整的 Manifest V3 扩展目录，填写目标浏览器配置名称并确认安装。按应用中的指引加载固定目录后，填写浏览器实际显示的 ID 和版本；应用记录为“用户已确认”，不把文件复制当成生效确认。关闭窗口即可退出；保留应用数据目录以维持扩展安装路径。
+
 ## 设计调研
 
 - [OpenLogi 技术栈、技能与 AST 工具](./docs/research/openlogi-stack.md)
