@@ -4,7 +4,7 @@ CEPM 是管理非商店 Chromium 扩展的 Rust + GPUI 桌面应用：把本地�
 
 先在左侧选择浏览器与 Profile，再维护该配置中的安装。多个常用配置可以置顶；重开应用会恢复最后选择。文件部署和浏览器生效分别记录，首次加载、更新后重载与版本核对通过浏览器原生扩展页完成。
 
-Windows/macOS、Chrome/Edge 是产品目标。本轮实际验收范围为 macOS Chrome；按用户决定不再做 Windows/Edge 专项验证，不能把此前的跨平台构建结果视为完整兼容性保证。
+Windows/macOS、Chrome/Edge 是产品目标。macOS Chrome 与 Edge 的主 Profile 已完成 OpenCLI 安装、连接和重启持久性验收；Windows 运行尚未验证，不能把跨平台构建结果视为完整兼容性保证。详见[本机主 Profile 验收](./docs/validation/main-profile-installation.md)。
 
 ## 获取与运行
 
