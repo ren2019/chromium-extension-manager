@@ -1,4 +1,4 @@
-# CEPM 用户旅程原型（待用户确认）
+# CEPM 用户旅程原型（已采纳 A，调整版供确认）
 
 这是一次性 HTML 交互原型，不是生产 GUI。正式实现暂停，待用户确认方向后再更新实现规格。所有扩展、版本、CLI、文件操作和浏览器观测都是模拟数据；刷新即重置。页面只读取用户在演示中填写的文本，不获取远程产物、不读取本地目录。
 
@@ -40,7 +40,7 @@ python3 -m http.server 8766 --bind 127.0.0.1 --directory prototypes/user-journey
 - 首页只放用户需要判断的状态和操作，目录、ID、具体提交折叠到详情。
 - 文件部署完成与浏览器确认分开；未完成不会消失，可以稍后继续。
 - 正式版仍使用 Rust + GPUI；HTML 只是交互与视觉确认工具。
-- 尚未选定布局，不把原型当作已批准的设计。
+- 2026-10-29 用户已采纳 A；后续布局调整和原生页面交接仍以原型确认，代码不直接进入生产。
 
 ## 实际检查
 
@@ -60,3 +60,21 @@ python3 -m http.server 8766 --bind 127.0.0.1 --directory prototypes/user-journey
 - 此处不增加一次安装到多个配置、自动迁移或共享可变安装文件的功能。
 
 已在 Chrome 中检查：个人配置只显示 2 条记录；切换工作配置显示其 3 条记录，同名 OpenCLI 版本仍为 1.1.0；绑定详情显示工作配置的独立目录。正式实现继续暂停。
+
+
+## 第三轮：采纳 A，侧栏快速切换与浏览器原生管理
+
+用户已采纳 A，要求浏览器与配置选择压缩到左侧菜单顶部。当前 A 用一个“Chrome · 个人”按钮展开分组菜单，切换后列表与操作范围同步变化。B/C 留作历史比较，不再是首页的待选方向。
+
+新增侧栏“打开浏览器扩展管理页”、详情“在浏览器中管理”和加载/重载指引入口。交接目标始终来自安装绑定的浏览器和 Profile。当前纯 HTML 仅模拟交接，不启动真实浏览器、不宣称能够操控内部页面。
+
+正式实现的建议边界：
+
+- CEPM 负责来源、产物、版本、备份与恢复；浏览器页面保留其原生加载、重载、启停、权限和移除交互。
+- 使用绑定的浏览器应用、用户数据目录和 Profile 目录请求打开管理页，不能把裸 URL 交给系统默认浏览器而丢失目标配置。指定 Profile 的实际路由需在后续 macOS Chrome 实现中验证；不增加 Windows/Edge 验证门槛。
+- 打开页面/进程调用成功不等于正确 Profile 中的扩展已加载；保留返回 CEPM 后的核对步骤。
+- 不在 HTML / WebView 中嵌入原生管理页，不把它当公共 DOM/API。应用代点、自动读取状态仍是单独能力验证问题，尚未承诺或实现。
+
+依据：Chromium 的 [用户数据目录文档](https://chromium.googlesource.com/chromium/src.git/+/HEAD/docs/user_data_dir.md)、[profile-directory 参数声明](https://github.com/chromium/chromium/blob/main/chrome/common/chrome_switches.h)、[内部页面保护说明](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md)。Chrome [远程调试限制](https://developer.chrome.com/blog/remote-debugging-port?hl=en)也说明不能假定任意日常 Profile 均可直接通过调试接口接管。
+
+实际检查：A 顶部不再出现两行选择栏；侧栏菜单能从个人切至工作；原生管理入口提示对应工作配置且不改变版本或确认状态。修复了原型操作分支内变量遮蔽对目标配置函数的影响。
