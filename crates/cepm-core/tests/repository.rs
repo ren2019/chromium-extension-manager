@@ -191,3 +191,170 @@ fn moving_branch_requires_explicit_redeploy_and_load_failure_restores_commit_met
         "original"
     );
 }
+
+#[test]
+fn unusable_repository_artifacts_leave_old_files_and_records_unchanged() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("managed");
+    let mut manager = Manager::open(&root).unwrap();
+    let mut gh = RepositoryGh {
+        reference: "main".into(),
+        commit: COMMIT.into(),
+        archive: artifact("1", "keep"),
+    };
+    let old = manager
+        .install_local(
+            manager
+                .preview_repository(&gh, "private-owner/extension", "main", "packages/extension")
+                .unwrap(),
+            target(),
+        )
+        .unwrap();
+    let missing_worker = r#"{"manifest_version":3,"name":"Broken","version":"2","background":{"service_worker":"missing.js"}}"#;
+    for bytes in [
+        archive(&[("wrapper/src/index.ts", "source only")]),
+        archive(&[("wrapper/packages/extension/manifest.json", missing_worker)]),
+        archive(&[(
+            "wrapper/other/manifest.json",
+            r#"{"manifest_version":3,"name":"Wrong location","version":"2"}"#,
+        )]),
+        archive(&[("first/file", "one"), ("second/file", "two")]),
+        archive(&[("manifest.json", "{}")]),
+        archive(&[("wrapper/../escape", "danger")]),
+        b"not a ZIP".to_vec(),
+    ] {
+        gh.archive = bytes;
+        assert!(manager.check_repository(&gh, &old.id).is_err());
+        assert_eq!(
+            fs::read_to_string(old.install_dir.join("worker.js")).unwrap(),
+            "keep"
+        );
+        assert_eq!(manager.list().unwrap(), vec![old.clone()]);
+    }
+    gh.reference = "not-the-saved-ref".into();
+    assert!(
+        manager
+            .check_repository(&gh, &old.id)
+            .err()
+            .unwrap()
+            .contains("访问权限")
+    );
+    drop(manager);
+    assert_eq!(Manager::open(&root).unwrap().list().unwrap(), vec![old]);
+}
+
+#[test]
+fn explicit_old_tag_can_be_selected_as_downgrade_and_its_reference_is_retained() {
+    use cepm_core::UpdateKind;
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("managed");
+    let mut manager = Manager::open(&root).unwrap();
+    let mut gh = RepositoryGh {
+        reference: "main".into(),
+        commit: COMMIT.into(),
+        archive: artifact("2", "latest"),
+    };
+    let old = manager
+        .install_local(
+            manager
+                .preview_repository(&gh, "private-owner/extension", "main", "packages/extension")
+                .unwrap(),
+            target(),
+        )
+        .unwrap();
+    gh.reference = "tags%2Fv1".into();
+    gh.commit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+    gh.archive = artifact("1", "older release");
+    let preview = manager
+        .preview_repository(
+            &gh,
+            "https://github.com/private-owner/extension",
+            "tags/v1",
+            "packages/extension",
+        )
+        .unwrap();
+    let plan = manager.prepare_update(&old.id, preview).unwrap();
+    assert_eq!(plan.kind(), UpdateKind::Downgrade);
+    let new = manager.apply_update(plan, UpdateKind::Downgrade).unwrap();
+    assert_eq!(new.origin, Some(origin("tags/v1", &gh.commit)));
+    assert_eq!(new.installed_version, "1");
+    assert_eq!(new.install_dir, old.install_dir);
+    manager
+        .confirm(
+            &new.id,
+            new.generation,
+            "abcdefghijklmnopabcdefghijklmnop",
+            "1",
+        )
+        .unwrap();
+    drop(manager);
+    let manager = Manager::open(&root).unwrap();
+    let check = manager.check_repository(&gh, &new.id).unwrap();
+    assert_eq!(check.kind(), UpdateKind::Unchanged);
+    assert_eq!(check.origin(), Some(&origin("tags/v1", &gh.commit)));
+}
+
+#[test]
+fn repository_root_and_full_commit_input_are_supported_without_guessing_an_extension_root() {
+    let temp = TempDir::new().unwrap();
+    let mut manager = Manager::open(&temp.path().join("managed")).unwrap();
+    let manifest = r#"{"manifest_version":3,"name":"Root extension","version":"3"}"#;
+    let gh = RepositoryGh {
+        reference: COMMIT.into(),
+        commit: COMMIT.into(),
+        archive: archive(&[("wrapper/manifest.json", manifest)]),
+    };
+    let preview = manager
+        .preview_repository(&gh, "private-owner/extension", COMMIT, ".")
+        .unwrap();
+    let record = manager.install_local(preview, target()).unwrap();
+    assert_eq!(
+        record.origin,
+        Some(RemoteOrigin::GitHubDirectory {
+            repo: GitHubRepo::parse("private-owner/extension").unwrap(),
+            reference: COMMIT.into(),
+            commit: COMMIT.into(),
+            subdirectory: "".into()
+        })
+    );
+    assert_eq!(
+        manager.check_repository(&gh, &record.id).unwrap().kind(),
+        cepm_core::UpdateKind::Unchanged
+    );
+}
+
+#[test]
+fn invalid_resolved_commits_and_input_refs_are_rejected_before_installation() {
+    let temp = TempDir::new().unwrap();
+    let manager = Manager::open(&temp.path().join("managed")).unwrap();
+    let mut gh = RepositoryGh {
+        reference: "main".into(),
+        commit: "short-sha".into(),
+        archive: artifact("1", "unused"),
+    };
+    for commit in [
+        "short-sha",
+        "gggggggggggggggggggggggggggggggggggggggg",
+        "../../another",
+    ] {
+        gh.commit = commit.into();
+        let error = manager
+            .preview_repository(&gh, "private-owner/extension", "main", "packages/extension")
+            .err()
+            .unwrap();
+        assert!(error.contains("提交标识"));
+    }
+    for reference in ["", "main\nsecret"] {
+        assert!(
+            manager
+                .preview_repository(
+                    &gh,
+                    "private-owner/extension",
+                    reference,
+                    "packages/extension"
+                )
+                .is_err()
+        );
+    }
+    assert!(manager.list().unwrap().is_empty());
+}
