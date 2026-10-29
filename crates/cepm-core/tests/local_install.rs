@@ -96,17 +96,28 @@ fn only_matching_browser_identity_and_version_can_be_user_confirmed() {
     let preview = manager.preview_local(&source).unwrap();
     let record = manager.install_local(preview, target()).unwrap();
     let extension_id = "abcdefghijklmnopabcdefghijklmnop";
-    assert!(manager.confirm(&record.id, extension_id, "9.0.0").is_err());
     assert!(
         manager
-            .confirm(&record.id, "not-an-extension-id", "1.2.3")
+            .confirm(&record.id, record.generation, extension_id, "9.0.0")
+            .is_err()
+    );
+    assert!(
+        manager
+            .confirm(
+                &record.id,
+                record.generation,
+                "not-an-extension-id",
+                "1.2.3"
+            )
             .is_err()
     );
     assert_eq!(
         manager.list().unwrap()[0].verification,
         Verification::Pending
     );
-    let confirmed = manager.confirm(&record.id, extension_id, "1.2.3").unwrap();
+    let confirmed = manager
+        .confirm(&record.id, record.generation, extension_id, "1.2.3")
+        .unwrap();
     assert_eq!(confirmed.verification, Verification::UserConfirmed);
     assert_eq!(confirmed.effective_version.as_deref(), Some("1.2.3"));
     assert_eq!(confirmed.extension_id.as_deref(), Some(extension_id));
@@ -162,7 +173,12 @@ fn corrupted_record_cannot_redirect_confirmation_writes() {
     assert!(manager.list().is_err());
     assert!(
         manager
-            .confirm("../../outside", "abcdefghijklmnopabcdefghijklmnop", "1.2.3")
+            .confirm(
+                "../../outside",
+                1,
+                "abcdefghijklmnopabcdefghijklmnop",
+                "1.2.3"
+            )
             .is_err()
     );
     assert!(!temp.path().join("outside.json").exists());
