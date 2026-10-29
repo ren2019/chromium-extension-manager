@@ -212,6 +212,7 @@ pub fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
         return Err("解压失败：ZIP 为空或文件数量超过 10000".into());
     }
     let mut paths = std::collections::BTreeMap::<String, bool>::new();
+    let mut spellings = std::collections::BTreeMap::<String, String>::new();
     let mut entries = Vec::new();
     let mut total = 0u64;
     for i in 0..archive.len() {
@@ -239,6 +240,20 @@ pub fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
             return Err("解压失败：ZIP 包含符号链接或特殊文件".into());
         }
         let key = clean.nfkc().collect::<String>().to_lowercase();
+        let mut spelling = String::new();
+        for part in &parts {
+            if !spelling.is_empty() {
+                spelling.push('/');
+            }
+            spelling.push_str(part);
+            let normalized = spelling.nfkc().collect::<String>().to_lowercase();
+            if spellings
+                .insert(normalized, spelling.clone())
+                .is_some_and(|old| old != spelling)
+            {
+                return Err("解压失败：ZIP 目录存在大小写或 Unicode 冲突".into());
+            }
+        }
         if paths.insert(key.clone(), file.is_dir()).is_some() {
             return Err("解压失败：ZIP 包含重复或大小写冲突路径".into());
         }
@@ -279,7 +294,8 @@ pub fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
     Ok(())
 }
 fn reserved_name(name: &str) -> bool {
-    let base = name
+    let normalized = name.nfkc().collect::<String>();
+    let base = normalized
         .split('.')
         .next()
         .unwrap_or_default()
@@ -289,3 +305,7 @@ fn reserved_name(name: &str) -> bool {
             && (base.starts_with("COM") || base.starts_with("LPT"))
             && matches!(base.as_bytes()[3], b'1'..=b'9'))
 }
+
+pub use crate::releases::{
+    Release, ReleaseArtifact, ReleaseAsset, ReleaseCatalog, ReleaseSelection,
+};
