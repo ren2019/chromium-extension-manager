@@ -1,4 +1,5 @@
 //! Installation use cases, independent of the desktop UI.
+pub mod bulk;
 pub mod profiles;
 mod releases;
 pub mod remote;

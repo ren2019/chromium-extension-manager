@@ -1,4 +1,5 @@
 use cepm_core::RemoteOrigin;
+use cepm_core::bulk::{BulkResult, BulkStatus, CheckedUpdate};
 use cepm_core::profiles::{
     BrowserLocation, BrowserProfile, ProfileBook, ProfileCandidate, discover_profiles,
 };
@@ -42,6 +43,7 @@ enum Panel {
     Guide,
     Update,
     Restore,
+    Bulk,
 }
 struct Desktop {
     manager: Option<Arc<Mutex<Manager>>>,
@@ -51,6 +53,8 @@ struct Desktop {
     selected: Option<String>,
     preview: Option<Preview>,
     update_plan: Option<UpdatePlan>,
+    bulk_checks: Vec<CheckedUpdate>,
+    bulk_results: Vec<BulkResult>,
     page: Page,
     panel: Panel,
     add_step: u8,
@@ -211,6 +215,8 @@ impl Desktop {
             selected: None,
             preview: None,
             update_plan: None,
+            bulk_checks: Vec::new(),
+            bulk_results: Vec::new(),
             page: Page::Library,
             panel: Panel::None,
             add_step: 1,
@@ -369,9 +375,21 @@ impl Desktop {
             .and_then(|r| r.launch());
         self.message(
             result,
-            "已请求打开目标配置的原生扩展页；完成后请回来核对",
+            "已请求打开目标配置；若出现新标签页，请复制管理页地址并在该窗口粘贴",
             cx,
         );
+    }
+    fn copy_management_url(&mut self, cx: &mut Context<Self>) {
+        if let Some(profile) = self.target() {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                profile.management_url().to_owned(),
+            ));
+            self.message(
+                Ok(()),
+                &format!("已复制。请在 {} 窗口的地址栏粘贴并打开", profile.label()),
+                cx,
+            );
+        }
     }
     fn work<T: Send + 'static>(
         &mut self,
@@ -901,6 +919,42 @@ impl Desktop {
         }
         content.into_any_element()
     }
+    fn check_all(&mut self, cx: &mut Context<Self>) {
+        let Some(profile) = self.target() else { return };
+        self.bulk_checks.clear();
+        self.bulk_results.clear();
+        self.work(
+            "正在逐项检查当前配置的来源…",
+            cx,
+            move |m| {
+                profile.validate_location()?;
+                m.check_target_updates(&CommandGh, &profile.target())
+            },
+            |v, checked| {
+                v.bulk_checks = checked;
+                v.panel = Panel::Bulk;
+                v.status = "检查完成。只有普通升级可批量准备；其他变更请单独处理。".into();
+            },
+        );
+    }
+    fn apply_all(&mut self, cx: &mut Context<Self>) {
+        let Some(profile) = self.target() else { return };
+        let checked = std::mem::take(&mut self.bulk_checks);
+        self.work(
+            "正在逐项备份与部署；每项独立保留结果…",
+            cx,
+            move |m| {
+                profile.validate_location()?;
+                let results = m.apply_target_upgrades(&profile.target(), checked);
+                Ok((results, m.list()?))
+            },
+            |v, (results, records)| {
+                v.bulk_results = results;
+                v.records = records;
+                v.status = "批量准备结束。成功项仍需在当前浏览器配置重新加载与核对。".into();
+            },
+        );
+    }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let scoped = self.scoped();
         let pending = scoped
@@ -1052,6 +1106,15 @@ impl Desktop {
                     .disabled(!self.target_ready())
                     .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
             )
+            .child(
+                Button::new("sidebar-copy-manager")
+                    .small()
+                    .ghost()
+                    .label("复制扩展管理页地址")
+                    .disabled(self.target().is_none())
+                    .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))),
+            )
+            .child(caption("若浏览器打开新标签页，请粘贴地址继续。"))
             .child(caption(format!(
                 "在 {} 中管理启停与权限",
                 self.target_label()
@@ -1090,18 +1153,26 @@ impl Desktop {
                             ))),
                     )
                     .child(
-                        h_flex().gap_2().child(
-                            Button::new("add-extension")
-                                .primary()
-                                .label("＋ 添加扩展")
-                                .disabled(disabled)
-                                .on_click(cx.listener(|v, _, w, cx| {
-                                    v.add_step = 1;
-                                    v.source_update_id = None;
-                                    v.preview = None;
-                                    v.open_panel(Panel::Add, w, cx);
-                                })),
-                        ),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("check-all")
+                                    .label("检查更新")
+                                    .disabled(disabled || self.scoped().is_empty())
+                                    .on_click(cx.listener(|v, _, _, cx| v.check_all(cx))),
+                            )
+                            .child(
+                                Button::new("add-extension")
+                                    .primary()
+                                    .label("＋ 添加扩展")
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(|v, _, w, cx| {
+                                        v.add_step = 1;
+                                        v.source_update_id = None;
+                                        v.preview = None;
+                                        v.open_panel(Panel::Add, w, cx);
+                                    })),
+                            ),
                     ),
             );
         if !self.status.is_empty() {
@@ -1454,7 +1525,15 @@ impl Desktop {
             }
             Panel::Add => {
                 content = content
-                    .child(caption(format!("添加到 {}", self.target_label())))
+                    .child(caption(format!(
+                        "{} {}",
+                        if self.source_update_id.is_some() {
+                            "为当前安装选择版本 ·"
+                        } else {
+                            "添加到"
+                        },
+                        self.target_label()
+                    )))
                     .child(
                         h_flex()
                             .gap_4()
@@ -1572,6 +1651,12 @@ impl Desktop {
                                     .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
                             )
                             .child(
+                                Button::new("detail-copy-manager")
+                                    .label("复制扩展管理页地址")
+                                    .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))),
+                            )
+                            .child(caption("若只打开了新标签页，请在该配置窗口粘贴地址继续。"))
+                            .child(
                                 Button::new("check-update")
                                     .label("检查来源与版本")
                                     .disabled(disabled || !self.target_ready())
@@ -1648,7 +1733,7 @@ impl Desktop {
                         let url = profile.management_url().to_string();
                         content = content
                             .child(heading("1  打开目标配置的扩展管理页"))
-                            .child(caption("请先确认窗口属于上方配置，再进行浏览器操作。"))
+                            .child(caption("请先确认窗口属于上方配置。若出现新标签页，复制地址并在该窗口地址栏粘贴。"))
                             .child(
                                 h_flex()
                                     .gap_2()
@@ -1757,6 +1842,75 @@ impl Desktop {
                     .child(Button::new("restore-files").primary().label("恢复上一份文件").disabled(disabled || !self.checked)
                         .on_click(cx.listener(|v, _, _, cx| v.restore(cx))));
             }
+            Panel::Bulk => {
+                content = content.child(heading(self.target_label())).child(caption(
+                    "本次只处理当前配置。降级、同版本重新部署与冲突需单独确认或处理。",
+                ));
+                for check in &self.bulk_checks {
+                    let summary = match check.plan() {
+                        Some(plan) => format!(
+                            "目标 {} · {}",
+                            plan.version(),
+                            match plan.kind() {
+                                UpdateKind::Upgrade => "可升级",
+                                UpdateKind::Downgrade => "降级需单独确认",
+                                UpdateKind::Redeploy => "同版本变更需单独确认",
+                                UpdateKind::Unchanged => "无需更新",
+                            }
+                        ),
+                        None => format!("检查失败：{}", check.error().unwrap_or("请重新检查")),
+                    };
+                    content = content.child(
+                        v_flex()
+                            .gap_1()
+                            .child(heading(check.name().to_owned()))
+                            .child(caption(summary)),
+                    );
+                }
+                let upgrades = self
+                    .bulk_checks
+                    .iter()
+                    .filter(|c| c.plan().is_some_and(|p| p.kind() == UpdateKind::Upgrade))
+                    .count();
+                if !self.bulk_checks.is_empty() {
+                    content = content.child(
+                        Button::new("apply-all")
+                            .primary()
+                            .label(format!("准备 {upgrades} 项升级"))
+                            .disabled(disabled || upgrades == 0)
+                            .on_click(cx.listener(|v, _, _, cx| v.apply_all(cx))),
+                    );
+                }
+                for result in &self.bulk_results {
+                    let id = result.id.clone();
+                    let (label, message) = match &result.status {
+                        BulkStatus::Deployed(_) => {
+                            ("文件已准备", "等待在浏览器重新加载并核对".to_owned())
+                        }
+                        BulkStatus::Skipped(reason) => ("已跳过", reason.clone()),
+                        BulkStatus::Failed(reason) => ("未完成", reason.clone()),
+                    };
+                    content = content.child(
+                        v_flex()
+                            .gap_2()
+                            .child(heading(result.name.clone()))
+                            .child(badge(
+                                label,
+                                !matches!(result.status, BulkStatus::Deployed(_)),
+                            ))
+                            .child(caption(message))
+                            .child(
+                                Button::new(SharedString::from(format!("bulk-result-{id}")))
+                                    .label("查看此扩展")
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(move |v, _, w, cx| {
+                                        v.selected = Some(id.clone());
+                                        v.open_panel(Panel::Detail, w, cx);
+                                    })),
+                            ),
+                    );
+                }
+            }
             Panel::None => {}
         }
         content.into_any_element()
@@ -1773,6 +1927,7 @@ impl Render for Desktop {
             Panel::Guide => "完成浏览器加载与核对",
             Panel::Update => "确认版本变更",
             Panel::Restore => "加载失败与恢复",
+            Panel::Bulk => "当前配置的更新",
             Panel::None => "",
         };
         div()
