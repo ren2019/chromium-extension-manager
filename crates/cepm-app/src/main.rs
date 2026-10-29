@@ -367,6 +367,42 @@ impl Desktop {
         })
         .detach();
     }
+    fn choose_local_version(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.current_record() else {
+            return;
+        };
+        self.busy = true;
+        self.update_plan = None;
+        self.checked = false;
+        cx.spawn(async move |this, cx| {
+            let folder = rfd::AsyncFileDialog::new()
+                .set_title("选择要切换到的完整扩展产物")
+                .pick_folder()
+                .await;
+            this.update(cx, |v, cx| {
+                v.busy = false;
+                if let Some(folder) = folder {
+                    let path = folder.path().to_path_buf();
+                    v.work(
+                        "正在检查所选版本…",
+                        cx,
+                        move |m| {
+                            let preview = m.preview_local(&path)?;
+                            m.prepare_update(&record.id, preview)
+                        },
+                        |v, plan| {
+                            v.update_plan = Some(plan);
+                            v.panel = Panel::Update;
+                            v.status.clear();
+                        },
+                    );
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
     fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.target() else { return };
         if let Err(e) = target.validate_location() {
@@ -1181,6 +1217,14 @@ impl Desktop {
                                     .label("检查来源与版本")
                                     .disabled(disabled || !self.target_ready())
                                     .on_click(cx.listener(|v, _, _, cx| v.check_update(cx))),
+                            )
+                            .child(
+                                Button::new("choose-local-version")
+                                    .label("选择其他本地版本…")
+                                    .disabled(disabled || !self.target_ready())
+                                    .on_click(
+                                        cx.listener(|v, _, _, cx| v.choose_local_version(cx)),
+                                    ),
                             )
                             .when(pending && !r.recovery_required, |v| {
                                 v.child(
