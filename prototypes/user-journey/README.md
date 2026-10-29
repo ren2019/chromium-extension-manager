@@ -1,6 +1,6 @@
 # CEPM 用户旅程原型（已采纳 A，调整版供确认）
 
-这是一次性 HTML 交互原型，不是生产 GUI。正式实现暂停，待用户确认方向后再更新实现规格。所有扩展、版本、CLI、文件操作和浏览器观测都是模拟数据；刷新即重置。页面只读取用户在演示中填写的文本，不获取远程产物、不读取本地目录。
+这是一次性 HTML 交互原型，不是生产 GUI。正式实现暂停，待用户确认方向后再更新实现规格。所有扩展、版本、CLI、文件操作和浏览器观测都是模拟数据；扩展操作在刷新后重置，置顶和上次选择单独保存。页面只读取用户在演示中填写的文本，不获取远程产物、不读取本地目录。
 
 ## 运行
 
@@ -78,3 +78,16 @@ python3 -m http.server 8766 --bind 127.0.0.1 --directory prototypes/user-journey
 依据：Chromium 的 [用户数据目录文档](https://chromium.googlesource.com/chromium/src.git/+/HEAD/docs/user_data_dir.md)、[profile-directory 参数声明](https://github.com/chromium/chromium/blob/main/chrome/common/chrome_switches.h)、[内部页面保护说明](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md)。Chrome [远程调试限制](https://developer.chrome.com/blog/remote-debugging-port?hl=en)也说明不能假定任意日常 Profile 均可直接通过调试接口接管。
 
 实际检查：A 顶部不再出现两行选择栏；侧栏菜单能从个人切至工作；原生管理入口提示对应工作配置且不改变版本或确认状态。修复了原型操作分支内变量遮蔽对目标配置函数的影响。
+
+
+## 第四轮：多个置顶与上次选择
+
+用户明确要求：常用浏览器配置可同时置顶多个，每次打开恢复最后选中的 Profile。
+
+- 菜单顶部展示“置顶”分组，条目携带浏览器名避免同名 Profile 混淆；其余配置继续按浏览器分组，不重复显示置顶项。
+- 点击 ☆ / ★ 置顶或取消置顶，不改变当前配置，不影响安装。置顶顺序按加入顺序，不增加拖拽排序功能。
+- 选择后保存该配置的稳定内部 ID，再次打开自动恢复；不以显示名称匹配。历史目标不存在时保留“上次配置（不可用）”入口，要求定位，不静默切到默认配置。
+- 这一轮正是在验证偏好持久性，因此原型有意用 localStorage 保存 `cepm-journey-prototype-preferences-v1`，仅含置顶 ID 与最后目标标识；不保存扩展部署或浏览器状态。正式应用将使用本机应用设置。
+- 重新打开需在同一浏览器配置、同一原型地址；HTML 文件与 localhost 属于不同存储范围。原型场景“重置”会选择其演示目标并更新最后选择，但不清除置顶。
+
+实际点击验证：同时置顶 Chrome 个人与工作，切换工作后重新加载；当前工作配置及两个置顶均保留。正式功能尚未实现。
