@@ -13,3 +13,7 @@
 GPUI 按已批准 A 重写：左侧顶部紧凑切换及置顶、按配置过滤列表、待办和记录、分步本地添加、详情、浏览器交接与核对。未定位旧记录不会自动混入当前配置。所有文件产物操作在后台执行；原生页面启动只报告请求发出，不作为生效证据。
 
 截至本阶段，5 项配置测试、应用编译、全 workspace clippy 通过；macOS 实际 UI 冒烟由集成分支统一进行。Windows/Edge 专项验证按用户决定不执行。此记录不声称真实浏览器路径路由已完成验收。
+
+Safe-update integration: GUI exposes frozen local version preview, explicit downgrade/same-version choice, file deployment, browser reload confirmation tied to generation, and load-failure recovery. Recovery-required records are visible and cannot be confirmed or updated. History shows the latest durable operation; it is not an exhaustive event log. Legacy binding explicitly accepts the current validated file baseline, bumps generation and clears effective state while retaining historical confirmation.
+
+A sixth test first reproduced acceptance of an empty directory, then verified that binding rejects an empty directory and user-data root. Bind/launch require the existing Profile Preferences file without reading its contents, and reject invalid Profile directory components. All six profile tests pass with the new update core.

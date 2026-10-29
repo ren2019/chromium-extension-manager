@@ -1,7 +1,7 @@
 use cepm_core::profiles::{
     BrowserLocation, BrowserProfile, ProfileBook, ProfileCandidate, discover_profiles,
 };
-use cepm_core::{Browser, Installation, Manager, Preview, Verification};
+use cepm_core::{Browser, Installation, Manager, Preview, UpdateKind, UpdatePlan, Verification};
 use gpui_kit::component::{
     button::*,
     checkbox::Checkbox,
@@ -32,6 +32,8 @@ enum Panel {
     Add,
     Detail,
     Guide,
+    Update,
+    Restore,
 }
 struct Desktop {
     manager: Option<Arc<Mutex<Manager>>>,
@@ -40,6 +42,7 @@ struct Desktop {
     records: Vec<Installation>,
     selected: Option<String>,
     preview: Option<Preview>,
+    update_plan: Option<UpdatePlan>,
     page: Page,
     panel: Panel,
     add_step: u8,
@@ -128,6 +131,7 @@ impl Desktop {
             records,
             selected: None,
             preview: None,
+            update_plan: None,
             page: Page::Library,
             panel: Panel::None,
             add_step: 1,
@@ -301,10 +305,21 @@ impl Desktop {
                     let mut m = manager
                         .lock()
                         .map_err(|_| "操作异常，请重启后检查记录".to_string())?;
-                    operation(&mut m)
+                    let result = operation(&mut m);
+                    let refreshed = if result.is_err() { m.list().ok() } else { None };
+                    Ok::<_, String>((result, refreshed))
                 })
                 .await;
             this.update(cx, |v, cx| {
+                let result = match result {
+                    Ok((result, refreshed)) => {
+                        if let Some(records) = refreshed {
+                            v.records = records;
+                        }
+                        result
+                    }
+                    Err(error) => Err(error),
+                };
                 v.busy = false;
                 match result {
                     Ok(value) => apply(v, value),
@@ -417,13 +432,83 @@ impl Desktop {
             cx,
             move |m| {
                 profile.validate_location()?;
-                m.confirm(&record.id, &id, &version)?;
+                m.confirm(&record.id, record.generation, &id, &version)?;
                 m.list()
             },
             |v, records| {
                 v.records = records;
                 v.panel = Panel::None;
                 v.status = "已记录用户确认".into();
+            },
+        );
+    }
+    fn check_update(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.current_record() else {
+            return;
+        };
+        self.update_plan = None;
+        self.checked = false;
+        self.work(
+            "正在读取来源并检查版本…",
+            cx,
+            move |m| m.check_local(&record.id),
+            |v, plan| {
+                v.status = if plan.kind() == UpdateKind::Unchanged {
+                    "来源文件与安装版本一致".into()
+                } else {
+                    "请确认版本变更，再准备文件".into()
+                };
+                v.update_plan = Some(plan);
+                v.panel = Panel::Update;
+            },
+        );
+    }
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        let Some(plan) = self.update_plan.take() else {
+            return;
+        };
+        if matches!(plan.kind(), UpdateKind::Downgrade | UpdateKind::Redeploy) && !self.checked {
+            self.update_plan = Some(plan);
+            self.message(Err("请明确确认降级或同版本重新部署".into()), "", cx);
+            return;
+        }
+        let Some(profile) = self.target() else { return };
+        self.work(
+            "正在准备 → 备份旧文件 → 部署文件…",
+            cx,
+            move |m| {
+                profile.validate_location()?;
+                let kind = plan.kind();
+                m.apply_update(plan, kind)?;
+                m.list()
+            },
+            |v, records| {
+                v.records = records;
+                v.panel = Panel::Detail;
+                v.checked = false;
+                v.status = "文件已部署，等待你在浏览器重新加载与核对".into();
+            },
+        );
+    }
+    fn restore(&mut self, cx: &mut Context<Self>) {
+        if !self.checked {
+            return;
+        }
+        let Some(record) = self.current_record() else {
+            return;
+        };
+        self.work(
+            "正在恢复上一份文件…",
+            cx,
+            move |m| {
+                m.report_load_failure(&record.id, record.generation)?;
+                m.list()
+            },
+            |v, records| {
+                v.records = records;
+                v.panel = Panel::Detail;
+                v.checked = false;
+                v.status = "上一份文件已恢复；仍需重新加载并核对，才会记录生效".into();
             },
         );
     }
@@ -746,6 +831,7 @@ impl Desktop {
                                 .border_b_1()
                                 .border_color(rgb(BORDER))
                                 .child(div().font_weight(FontWeight::MEDIUM).child(r.name))
+                                .child(caption(r.last_operation.clone()))
                                 .child(caption(format!(
                                     "文件 {} · {}",
                                     r.installed_version,
@@ -801,11 +887,18 @@ impl Desktop {
                                         } else {
                                             "浏览器 "
                                         },
-                                        r.effective_version.as_deref().unwrap_or("尚未确认")
+                                        if pending {
+                                            r.historical_version.as_deref()
+                                        } else {
+                                            r.effective_version.as_deref()
+                                        }
+                                        .unwrap_or("尚未确认")
                                     ))),
                             )
                             .child(badge(
-                                if pending {
+                                if r.recovery_required {
+                                    "恢复需要处理"
+                                } else if pending {
                                     "需要你完成"
                                 } else {
                                     "已确认生效"
@@ -824,7 +917,11 @@ impl Desktop {
                                     .on_click(cx.listener(move |v, _, w, cx| {
                                         v.selected = Some(guide_id.clone());
                                         v.open_panel(
-                                            if pending { Panel::Guide } else { Panel::Detail },
+                                            if pending && !r.recovery_required {
+                                                Panel::Guide
+                                            } else {
+                                                Panel::Detail
+                                            },
                                             w,
                                             cx,
                                         );
@@ -921,7 +1018,7 @@ impl Desktop {
                     )))
                     .child(
                         Checkbox::new("legacy-check")
-                            .label("我确认下列安装原本就在当前浏览器配置中")
+                            .label("我确认原配置一致，并接受当前安装文件作为后续更新基线")
                             .checked(self.checked)
                             .on_click(cx.listener(|v, value, _, cx| {
                                 v.checked = *value;
@@ -1036,6 +1133,12 @@ impl Desktop {
                 if let Some(r) = self.current_record() {
                     let profile = self.target().unwrap();
                     let pending = r.verification == Verification::Pending;
+                    let disabled = disabled || r.recovery_required;
+                    if r.recovery_required {
+                        content = content
+                            .child(badge("恢复需要处理", true))
+                            .child(caption(r.last_operation.clone()));
+                    }
                     content = content
                         .child(heading(r.name.clone()))
                         .child(badge(profile.label(), false))
@@ -1055,7 +1158,12 @@ impl Desktop {
                                             } else {
                                                 "生效版本"
                                             },
-                                            r.effective_version.as_deref().unwrap_or("尚未确认")
+                                            if pending {
+                                                r.historical_version.as_deref()
+                                            } else {
+                                                r.effective_version.as_deref()
+                                            }
+                                            .unwrap_or("尚未确认")
                                         ))),
                                 ),
                         );
@@ -1068,9 +1176,16 @@ impl Desktop {
                                     .disabled(!self.target_ready())
                                     .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
                             )
-                            .when(pending, |v| {
+                            .child(
+                                Button::new("check-update")
+                                    .label("检查来源与版本")
+                                    .disabled(disabled || !self.target_ready())
+                                    .on_click(cx.listener(|v, _, _, cx| v.check_update(cx))),
+                            )
+                            .when(pending && !r.recovery_required, |v| {
                                 v.child(
                                     Button::new("detail-guide")
+                                        .disabled(disabled)
                                         .primary()
                                         .label("继续加载与核对")
                                         .on_click(cx.listener(|v, _, w, cx| {
@@ -1103,6 +1218,16 @@ impl Desktop {
                                     )))
                             });
                     } else {
+                        if pending && r.generation > 1 && !r.recovery_required {
+                            content = content.child(
+                                Button::new("load-failed")
+                                    .label("加载失败，恢复上一份文件")
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(|v, _, w, cx| {
+                                        v.open_panel(Panel::Restore, w, cx)
+                                    })),
+                            );
+                        }
                         let path = r.install_dir.display().to_string();
                         let url = profile.management_url().to_string();
                         content = content
@@ -1168,6 +1293,54 @@ impl Desktop {
                     }
                 }
             }
+            Panel::Update => {
+                if let (Some(r), Some(plan)) = (self.current_record(), &self.update_plan) {
+                    let kind = match plan.kind() {
+                        UpdateKind::Upgrade => "升级",
+                        UpdateKind::Downgrade => "降级",
+                        UpdateKind::Redeploy => "同版本重新部署",
+                        UpdateKind::Unchanged => "已经是当前版本",
+                    };
+                    content = content.child(heading(r.name)).child(badge(self.target_label(), false))
+                        .child(heading(format!("{} → {}", r.installed_version, plan.version())))
+                        .child(caption(format!("{kind} · {}", plan.source().display())))
+                        .child(caption("保留固定安装目录和上一份文件。准备完成后，请在浏览器重新加载；未经核对不会显示已生效。"));
+                    if matches!(plan.kind(), UpdateKind::Downgrade | UpdateKind::Redeploy) {
+                        content = content.child(
+                            Checkbox::new("version-choice")
+                                .label(format!("我明确选择{kind}"))
+                                .checked(self.checked)
+                                .disabled(disabled)
+                                .on_click(cx.listener(|v, value, _, cx| {
+                                    v.checked = *value;
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    content = content.child(
+                        Button::new("apply-update")
+                            .primary()
+                            .label(format!("确认{kind}"))
+                            .disabled(
+                                disabled
+                                    || plan.kind() == UpdateKind::Unchanged
+                                    || (matches!(
+                                        plan.kind(),
+                                        UpdateKind::Downgrade | UpdateKind::Redeploy
+                                    ) && !self.checked),
+                            )
+                            .on_click(cx.listener(|v, _, _, cx| v.apply_update(cx))),
+                    );
+                }
+            }
+            Panel::Restore => {
+                content = content.child(heading("浏览器无法加载新版本？"))
+                    .child(caption("恢复本次更新前保留的文件，然后重新加载与核对。浏览器数据由浏览器保管；恢复文件不会自动恢复浏览器数据。"))
+                    .child(Checkbox::new("restore-check").label("新文件加载失败，我要恢复上一份文件").checked(self.checked).disabled(disabled)
+                        .on_click(cx.listener(|v, value, _, cx| { v.checked = *value; cx.notify(); })))
+                    .child(Button::new("restore-files").primary().label("恢复上一份文件").disabled(disabled || !self.checked)
+                        .on_click(cx.listener(|v, _, _, cx| v.restore(cx))));
+            }
             Panel::None => {}
         }
         content.into_any_element()
@@ -1182,6 +1355,8 @@ impl Render for Desktop {
             Panel::Add => "添加扩展",
             Panel::Detail => "扩展详情",
             Panel::Guide => "完成浏览器加载与核对",
+            Panel::Update => "确认版本变更",
+            Panel::Restore => "加载失败与恢复",
             Panel::None => "",
         };
         div()

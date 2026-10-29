@@ -38,9 +38,16 @@ impl BrowserProfile {
         }
     }
     pub fn validate_location(&self) -> Result<()> {
-        if !self.application.is_file() || !self.profile_path().is_dir() {
+        if !self.application.is_file()
+            || !self.profile_path().join("Preferences").is_file()
+            || self.profile_directory.is_empty()
+            || self.profile_directory == "."
+            || self.profile_directory == ".."
+            || self.profile_directory.contains(['/', '\\', ':'])
+            || self.profile_path().canonicalize().ok().as_ref() != Some(&self.profile_path())
+        {
             return Err(format!(
-                "找不到 {} 的应用或配置目录。请检查位置；不会切换到其他配置",
+                "找不到 {} 的应用或已有配置（Preferences）。请从浏览器 version 页核对 Profile Path；不会创建或切换配置",
                 self.label()
             ));
         }
@@ -315,6 +322,24 @@ impl crate::Manager {
         if record.target.browser != profile.browser {
             return Err("请选择与旧安装一致的浏览器；不支持迁移浏览器数据".into());
         }
+        if record.recovery_required {
+            return Err("此安装需要先恢复，不能重新绑定".into());
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(record.install_dir.join("manifest.json")).map_err(error)?,
+        )
+        .map_err(|e| e.to_string())?;
+        super::validate_manifest(&manifest, &record.install_dir)?;
+        if manifest["version"].as_str() != Some(&record.installed_version) {
+            return Err("当前文件与记录版本不一致，请保留数据并检查".into());
+        }
+        record.content_digest = super::updates::directory_digest(&record.install_dir)?;
+        record.generation = record.generation.checked_add(1).ok_or("安装代数溢出")?;
+        record.historical_version = record
+            .effective_version
+            .take()
+            .or(record.historical_version);
+        record.last_operation = "用户接受当前文件基线并定位配置，等待重新核对".into();
         record.target = profile.target();
         record.verification = crate::Verification::Pending;
         record.effective_version = None;
