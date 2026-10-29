@@ -4,16 +4,18 @@
 
 ## 项目起点
 
-[产品需求文档（PRD，Draft v0.1）](./prd-chromium-extension-package-manager.md) 是项目的初始需求基线，原文从 Downloads 导入，未作修改。
+[产品需求文档（PRD v0.3）](./prd-chromium-extension-package-manager.md) 从 Downloads 导入，初始原文保存在首次提交中；设计访谈决策已合入正文，第 17 节汇总当前基线。
 
-当前处于需求阶段，尚未选择技术栈或开始实现。
+设计访谈已收口：核心确定使用 Rust，GUI 优先验证 GPUI/gpui-kit，尚未开始实现或跨平台实测。
 
 ## MVP 范围
 
-- 目标平台：Windows，优先支持 Microsoft Edge 和 Google Chrome。
-- 扩展来源：作者发布的预构建 GitHub Release ZIP（Manifest V3）。
-- 核心流程：添加来源、下载校验、固定目录安装、检查更新、一键更新和生效版本验证。
-- 浏览器加载：受管配置自动加载；现有日常配置按实际能力提供一次性手动降级。
+- 目标平台：Windows 和 macOS，优先支持 Microsoft Edge 和 Google Chrome。
+- 扩展来源：公开及私有 GitHub Release ZIP、仓库内可直接加载的扩展子目录、本地目录；首版不自动构建源码。
+- 远程获取与认证：调用相应外部 CLI，由 CLI 管理 Token；本项目不提供登录或凭据管理。
+- 核心流程：添加来源、下载校验、固定目录安装、检查更新、选择版本（含降级）和生效版本验证。
+- 浏览器加载：优先服务现有日常配置，允许首次手动加载；受管环境作为可选的自动化模式。
+- 生效确认：可靠自动检查不可用时，允许用户手动重载并核对版本，结果明确标记为用户确认。
 - 可靠性要求：更新前备份，失败不破坏旧版，检测本地修改，区分磁盘版本与实际生效版本。
 - 首个验收案例：OpenCLI Browser Bridge。
 
@@ -34,3 +36,14 @@ Agent 入口为 [AGENTS.md](./AGENTS.md)，具体约定见：
 - [领域文档](./docs/agents/domain.md)
 
 这些配置可直接编辑。术语表和架构决策记录在实际需要时创建。
+
+## 设计调研
+
+- [OpenLogi 技术栈、技能与 AST 工具](./docs/research/openlogi-stack.md)
+- [GitHub 扩展发布范式样本](./docs/research/extension-distribution.md)
+- [本地目录版本声明](./docs/research/local-directory-version.md)
+- [私有 GitHub 认证方案](./docs/research/private-github-auth.md)
+- [浏览器状态验证与重载](./docs/research/browser-verification.md)
+- [已确认：扩展安装必须独立于管理器持续可用](./docs/adr/0001-persistent-browser-installation.md)
+
+调研文档中的建议不等同于已确认决策；产品范围以 PRD 中的访谈记录为准。
