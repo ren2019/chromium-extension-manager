@@ -1968,13 +1968,31 @@ impl Desktop {
                             )
                             .when(self.show_technical, |v| {
                                 v.child(caption(
-                                    "只打开了新标签页？复制下面地址，在该浏览器窗口粘贴打开。",
+                                    "没有打开扩展页？复制下面地址，在上方浏览器配置的窗口中粘贴打开。",
                                 ))
                                 .child(
                                     Button::new("copy-url").label("复制扩展页地址").on_click(
                                         cx.listener(|v, _, _, cx| v.copy_management_url(cx)),
                                     ),
                                 )
+                                .when(self.guide_step == 1, |v| {
+                                    v.child(
+                                        Button::new("guide-manual-continue")
+                                            .label("已手动打开，继续")
+                                            .disabled(disabled || !self.target_ready())
+                                            .on_click(cx.listener(|v, _, _, cx| {
+                                                let result = v
+                                                    .target()
+                                                    .ok_or("请先选择浏览器配置".into())
+                                                    .and_then(|p| p.validate_location());
+                                                if result.is_ok() {
+                                                    v.guide_step = 2;
+                                                    v.show_technical = false;
+                                                }
+                                                v.message(result, "", cx);
+                                            })),
+                                    )
+                                })
                                 .when(
                                     pending && r.generation > 1 && !r.recovery_required,
                                     |v| {
