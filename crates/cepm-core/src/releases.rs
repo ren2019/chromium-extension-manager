@@ -184,7 +184,14 @@ impl Manager {
         let mut roots = Vec::new();
         find_roots(extracted.path(), extracted.path(), &mut roots)?;
         let mut candidates = Vec::new();
+        let mut snapshot_bytes = 0u64;
         for root in roots {
+            snapshot_bytes = snapshot_bytes
+                .checked_add(directory_size(&extracted.path().join(&root))?)
+                .ok_or("扩展预览大小溢出")?;
+            if snapshot_bytes > 256 * 1024 * 1024 {
+                return Err("验证扩展失败：候选根目录的累计预览超过 256 MiB，请选择较小、结构清晰的扩展产物".into());
+            }
             if let Ok(preview) = self.preview_local(&extracted.path().join(&root)) {
                 if declared_version(&asset.name)
                     .is_some_and(|(_, _, version)| version != preview.version())
@@ -251,17 +258,45 @@ impl Manager {
     }
 }
 fn parse_release_source(source: &str) -> Result<(GitHubRepo, Option<String>)> {
-    if let Some((repo, tag)) = source.split_once("/releases/tag/") {
-        if tag.is_empty() {
-            return Err("Release 地址缺少标签".into());
-        }
-        return Ok((GitHubRepo::parse(repo)?, Some(tag.into())));
+    let source = source.trim();
+    if source.contains(['?', '#']) {
+        return Err("来源地址不应包含查询参数或片段，请复制仓库或 Release 地址".into());
     }
-    Ok((
-        GitHubRepo::parse(source.trim_end_matches("/releases"))?,
-        None,
-    ))
+    if let Some((repo, tag)) = source.split_once("/releases/tag/") {
+        let tag = decode_tag(tag)?;
+        if tag.is_empty() || tag.chars().any(char::is_control) {
+            return Err("Release 地址缺少有效标签".into());
+        }
+        return Ok((GitHubRepo::parse(repo)?, Some(tag)));
+    }
+    let source = if source.starts_with("https://github.com/") {
+        source
+            .strip_suffix("/releases/latest")
+            .or_else(|| source.strip_suffix("/releases"))
+            .unwrap_or(source)
+    } else {
+        source
+    };
+    Ok((GitHubRepo::parse(source)?, None))
 }
+fn decode_tag(tag: &str) -> Result<String> {
+    let mut decoded = Vec::new();
+    let bytes = tag.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let pair = bytes.get(i + 1..i + 3).ok_or("Release 地址编码无效")?;
+            let hex = std::str::from_utf8(pair).map_err(|_| "Release 地址编码无效")?;
+            decoded.push(u8::from_str_radix(hex, 16).map_err(|_| "Release 地址编码无效")?);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "Release 标签不是有效 UTF-8".into())
+}
+
 fn find_roots(
     base: &std::path::Path,
     current: &std::path::Path,
@@ -313,4 +348,20 @@ fn selector(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+fn directory_size(directory: &std::path::Path) -> Result<u64> {
+    let mut size = 0u64;
+    for entry in fs::read_dir(directory).map_err(crate::io_error)? {
+        let entry = entry.map_err(crate::io_error)?;
+        let metadata = entry.metadata().map_err(crate::io_error)?;
+        size = size
+            .checked_add(if metadata.is_dir() {
+                directory_size(&entry.path())?
+            } else {
+                metadata.len()
+            })
+            .ok_or("扩展大小溢出")?;
+    }
+    Ok(size)
 }
