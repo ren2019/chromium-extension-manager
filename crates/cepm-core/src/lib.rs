@@ -1,5 +1,6 @@
 //! Installation use cases, independent of the desktop UI.
 pub mod remote;
+mod repository;
 mod updates;
 use fs2::FileExt;
 pub use remote::RemoteOrigin;
