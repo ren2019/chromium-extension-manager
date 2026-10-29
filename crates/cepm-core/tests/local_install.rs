@@ -166,3 +166,28 @@ fn corrupted_record_cannot_redirect_confirmation_writes() {
     );
     assert!(!temp.path().join("outside.json").exists());
 }
+
+#[test]
+fn declared_rule_sets_and_sandbox_pages_must_exist() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path());
+    let manager = Manager::open(&temp.path().join("managed")).unwrap();
+    for extra in [
+        serde_json::json!({"declarative_net_request":{"rule_resources":[{"id":"rules","enabled":true,"path":"rules.json"}]}}),
+        serde_json::json!({"sandbox":{"pages":["sandbox.html"]}}),
+    ] {
+        let mut manifest = serde_json::json!({"manifest_version":3,"name":"test","version":"1"});
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        fs::write(
+            source.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(manager.preview_local(&source).is_err());
+    }
+    fs::write(source.join("sandbox.html"), "<!doctype html>").unwrap();
+    assert!(manager.preview_local(&source).is_ok());
+}

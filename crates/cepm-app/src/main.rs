@@ -127,7 +127,7 @@ impl Desktop {
         .detach();
     }
 
-    fn install(&mut self, cx: &mut Context<Self>) {
+    fn install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let profile = self.profile.read(cx).value().to_string();
         if profile.trim().is_empty() {
             self.status = "请先填写目标浏览器配置，避免在错误配置加载".into();
@@ -137,6 +137,10 @@ impl Desktop {
         let Some(preview) = self.preview.take() else {
             return;
         };
+        self.extension_id
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.version
+            .update(cx, |state, cx| state.set_value("", window, cx));
         let target = Target {
             browser: self.browser.clone(),
             profile,
@@ -198,8 +202,9 @@ impl Render for Desktop {
             .child(Input::new(&self.profile).disabled(disabled))
             .when_some(self.preview.as_ref(), |layout, preview| layout
                 .child(format!("准备安装：{} · {}", preview.name(), preview.version()))
+                .child(format!("来源目录：{}", preview.source().display()))
                 .child(Button::new("install").primary().label("确认安装到固定目录").disabled(disabled)
-                    .on_click(cx.listener(|view, _, _, cx| view.install(cx)))))
+                    .on_click(cx.listener(|view, _, window, cx| view.install(window, cx)))))
             .child(div().p_2().border_1().rounded_md().child(self.status.clone()))
             .child(div().id("installations").flex_1().overflow_y_scroll().children(self.records.iter().map(|record| {
                 let id = record.id.clone();
@@ -220,6 +225,7 @@ impl Render for Desktop {
                 let url = match record.target.browser { Browser::Chrome => "chrome://extensions", Browser::Edge => "edge://extensions" };
                 layout.child(v_flex().gap_2().p_3().border_1().rounded_md()
                     .child(format!("{} / {} · {}", record.name, record.target.profile, url))
+                    .child(format!("来源目录：{}", record.source.display()))
                     .child(format!("固定安装目录：{path}"))
                     .child(Button::new("copy-path").label("复制安装目录").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone()))))
                     .child("在目标配置打开扩展管理页 → 开启开发者模式 → 加载未打包扩展 → 选择此目录。")

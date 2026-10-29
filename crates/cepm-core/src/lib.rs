@@ -48,6 +48,9 @@ pub struct Preview {
     snapshot: TempDir,
 }
 impl Preview {
+    pub fn source(&self) -> &Path {
+        &self.source
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -301,6 +304,16 @@ fn validate_manifest(manifest: &serde_json::Value, root: &Path) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+    if let Some(rules) = manifest.pointer("/declarative_net_request/rule_resources") {
+        for rule in rules.as_array().ok_or("声明式规则资源列表格式无效")? {
+            resource(rule.get("path").ok_or("声明式规则缺少资源路径")?)?;
+        }
+    }
+    if let Some(pages) = manifest.pointer("/sandbox/pages") {
+        for page in pages.as_array().ok_or("沙盒页面列表格式无效")? {
+            resource(page)?;
         }
     }
     if let Some(locale) = manifest.get("default_locale") {

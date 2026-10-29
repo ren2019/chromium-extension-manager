@@ -6,7 +6,7 @@
 
 [产品需求文档（PRD v0.4）](./prd-chromium-extension-package-manager.md) 从 Downloads 导入，初始原文保存在首次提交中；设计访谈决策已合入正文，第 17 节汇总当前基线。
 
-设计访谈已收口：采用 Rust 核心与 GPUI/gpui-kit 界面。最小实验已通过 macOS 交互、双平台构建及 macOS Chrome 持久安装验证；用户已取消后续 Windows/Edge 验证门槛，进入实现规格和任务拆分阶段。Windows/Edge 仍是支持目标，未测行为不声明已验证兼容。
+设计访谈已收口：采用 Rust 核心与 GPUI/gpui-kit 界面，已实现本地目录安装与用户确认切片。用户已取消后续 Windows/Edge 验证门槛；这些平台仍是支持目标，未测行为不声明已验证兼容。后续任务见实现规格。
 
 ## MVP 范围
 
