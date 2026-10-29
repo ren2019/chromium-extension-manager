@@ -1,4 +1,5 @@
 //! Installation use cases, independent of the desktop UI.
+pub mod profiles;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
