@@ -1,6 +1,8 @@
 //! Installation use cases, independent of the desktop UI.
+pub mod remote;
 mod updates;
 use fs2::FileExt;
+pub use remote::RemoteOrigin;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -35,6 +37,8 @@ pub struct Installation {
     pub id: String,
     pub name: String,
     pub source: PathBuf,
+    #[serde(default)]
+    pub origin: Option<RemoteOrigin>,
     pub install_dir: PathBuf,
     pub target: Target,
     pub installed_version: String,
@@ -58,12 +62,21 @@ pub struct Installation {
 }
 
 pub struct Preview {
+    origin: Option<RemoteOrigin>,
     source: PathBuf,
     name: String,
     version: String,
     snapshot: TempDir,
 }
 impl Preview {
+    pub fn with_origin(mut self, origin: RemoteOrigin) -> Self {
+        self.source = PathBuf::from(origin.location());
+        self.origin = Some(origin);
+        self
+    }
+    pub fn origin(&self) -> Option<&RemoteOrigin> {
+        self.origin.as_ref()
+    }
     pub fn source(&self) -> &Path {
         &self.source
     }
@@ -126,6 +139,7 @@ impl Manager {
             .ok_or("清单缺少版本")?
             .to_string();
         Ok(Preview {
+            origin: None,
             source,
             name,
             version,
@@ -145,6 +159,7 @@ impl Manager {
             id,
             name: preview.name,
             source: preview.source,
+            origin: preview.origin,
             install_dir,
             target,
             installed_version: preview.version,

@@ -42,6 +42,9 @@ pub struct UpdatePlan {
     kind: UpdateKind,
 }
 impl UpdatePlan {
+    pub fn origin(&self) -> Option<&RemoteOrigin> {
+        self.preview.origin()
+    }
     pub fn kind(&self) -> UpdateKind {
         self.kind
     }
@@ -59,6 +62,9 @@ impl UpdatePlan {
 impl Manager {
     pub fn check_local(&self, id: &str) -> Result<UpdatePlan> {
         let record = self.record(id)?;
+        if record.origin.is_some() {
+            return Err("此安装来自远程来源，请使用对应的远程检查入口".into());
+        }
         let preview = self
             .preview_local(&record.source)
             .map_err(|e| format!("检查来源失败：{e}。请恢复来源目录或选择其他完整产物"))?;
@@ -113,6 +119,7 @@ impl Manager {
         let mut after = before.clone();
         after.name = plan.preview.name;
         after.source = plan.preview.source;
+        after.origin = plan.preview.origin;
         after.installed_version = plan.preview.version;
         after.content_digest = directory_digest(plan.preview.snapshot.path())?;
         after.generation = before
