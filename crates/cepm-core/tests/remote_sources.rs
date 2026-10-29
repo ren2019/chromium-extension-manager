@@ -341,6 +341,7 @@ fn dangerous_archives_are_rejected_before_touching_any_installation() {
         vec!["café", "cafe\u{301}"],
         vec!["file", "file/child"],
         vec!["A/one", "a/two"],
+        vec!["straße", "strasse"],
     ] {
         let mut files = vec![("manifest.json", manifest.as_slice())];
         files.extend(names.iter().map(|n| (*n, b"test".as_slice())));
@@ -357,4 +358,218 @@ fn dangerous_archives_are_rejected_before_touching_any_installation() {
         );
         assert_eq!(manager.list().unwrap(), vec![record.clone()]);
     }
+}
+
+#[test]
+fn saved_asset_and_root_choices_follow_versions_and_explicit_downgrades_keep_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = Manager::open(dir.path()).unwrap();
+    let initial = fixture(
+        json!([[release("product-9", false, 1, "bridge-extension-v2.zip")]]),
+        "product-9",
+        &[(1, archive("2"))],
+    );
+    let record = manager
+        .install_local(
+            manager
+                .preview_release(&initial, "owner/repo", &ReleaseSelection::default())
+                .unwrap()
+                .select_root(None)
+                .unwrap(),
+            Target {
+                browser: Browser::Chrome,
+                profile: "one".into(),
+            },
+        )
+        .unwrap();
+    let next = fixture(
+        json!([[
+            release("product-10", false, 2, "bridge-extension-v3.zip"),
+            release("product-8", false, 3, "bridge-extension-v1.zip")
+        ]]),
+        "product-10",
+        &[(2, archive("3")), (3, archive("1"))],
+    );
+    let plan = manager.check_release(&next, &record.id).unwrap();
+    assert_eq!(plan.kind(), cepm_core::UpdateKind::Upgrade);
+    let upgraded = manager
+        .apply_update(plan, cepm_core::UpdateKind::Upgrade)
+        .unwrap();
+    assert_eq!(upgraded.install_dir, record.install_dir);
+    assert_eq!(upgraded.installed_version, "3");
+    assert_eq!(upgraded.verification, cepm_core::Verification::Pending);
+    manager
+        .confirm(&record.id, upgraded.generation, &"a".repeat(32), "3")
+        .unwrap();
+    let preview = manager
+        .preview_release(
+            &next,
+            "owner/repo",
+            &ReleaseSelection {
+                tag: Some("product-8".into()),
+                asset_id: None,
+            },
+        )
+        .unwrap()
+        .select_root(None)
+        .unwrap();
+    let plan = manager.prepare_update(&record.id, preview).unwrap();
+    assert_eq!(plan.kind(), cepm_core::UpdateKind::Downgrade);
+    let lower = manager
+        .apply_update(plan, cepm_core::UpdateKind::Downgrade)
+        .unwrap();
+    assert_eq!(lower.install_dir, record.install_dir);
+    assert_eq!(lower.installed_version, "1");
+    assert_eq!(lower.extension_id.as_deref(), Some("a".repeat(32).as_str()));
+    let recovered = manager
+        .report_load_failure(&record.id, lower.generation)
+        .unwrap();
+    assert_eq!(recovered.installed_version, "3");
+    assert!(
+        matches!(recovered.origin,Some(RemoteOrigin::GitHubRelease{tag,..}) if tag=="product-10")
+    );
+}
+#[test]
+fn release_urls_preserve_encoded_tags_and_reject_foreign_or_credential_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::open(dir.path()).unwrap();
+    let gh = fixture(
+        json!([[release("release/old", false, 1, "extension.zip")]]),
+        "release/old",
+        &[(1, archive("1"))],
+    );
+    let preview = manager
+        .preview_release(
+            &gh,
+            "https://github.com/owner/releases/releases/tag/release%2Fold",
+            &ReleaseSelection::default(),
+        )
+        .unwrap()
+        .select_root(None)
+        .unwrap();
+    assert_eq!(preview.version(), "1");
+    assert_eq!(
+        manager
+            .list_releases(&gh, "owner/releases")
+            .unwrap()
+            .repo
+            .name,
+        "releases"
+    );
+    for source in [
+        "https://github.com.evil/owner/repo",
+        "https://token@github.com/owner/repo",
+        "https://gitlab.com/owner/repo",
+        "https://github.com/owner/repo?token=secret",
+        "https://github.com/owner/repo/releases/tag/x?token=secret",
+        "--hostname/evil",
+    ] {
+        assert!(
+            manager.list_releases(&gh, source).is_err(),
+            "accepted {source}"
+        );
+    }
+}
+#[test]
+fn duplicate_entries_links_corruption_and_oversized_entries_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::open(dir.path()).unwrap();
+    let manifest = br#"{"manifest_version":3,"name":"Bridge","version":"1"}"#;
+    let mut duplicate = zip_files(&[
+        ("manifest.json", manifest),
+        ("first.txt", b"one"),
+        ("other.txt", b"two"),
+    ]);
+    for i in 0..duplicate.len() - 9 {
+        if &duplicate[i..i + 9] == b"other.txt" {
+            duplicate[i..i + 9].copy_from_slice(b"first.txt");
+        }
+    }
+    let mut symlink = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    symlink
+        .start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    symlink.write_all(manifest).unwrap();
+    symlink
+        .add_symlink(
+            "link",
+            "../outside",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+    let mut oversized = archive("1");
+    let index = oversized
+        .windows(4)
+        .position(|p| p == b"PK\x01\x02")
+        .unwrap();
+    oversized[index + 24..index + 28].copy_from_slice(&(65u32 * 1024 * 1024).to_le_bytes());
+    for (label, bytes) in [
+        ("duplicate", duplicate),
+        ("symlink", symlink.finish().unwrap().into_inner()),
+        ("size", oversized),
+        ("corrupt", b"not a ZIP".to_vec()),
+    ] {
+        let gh = fixture(
+            json!([[release("v1", false, 1, "extension.zip")]]),
+            "v1",
+            &[(1, bytes)],
+        );
+        assert!(
+            manager
+                .preview_release(&gh, "owner/repo", &ReleaseSelection::default())
+                .is_err(),
+            "accepted {label}"
+        );
+    }
+}
+#[test]
+fn changed_selectors_or_cli_failures_pause_checks_without_changing_existing_installations() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut manager = Manager::open(dir.path()).unwrap();
+    let manifest = br#"{"manifest_version":3,"name":"Bridge","version":"1"}"#;
+    let initial = fixture(
+        json!([[release("v1", false, 1, "bridge-extension-v1.zip")]]),
+        "v1",
+        &[(1, zip_files(&[("dist/manifest.json", manifest)]))],
+    );
+    let record = manager
+        .install_local(
+            manager
+                .preview_release(&initial, "private/repo", &ReleaseSelection::default())
+                .unwrap()
+                .select_root(None)
+                .unwrap(),
+            Target {
+                browser: Browser::Chrome,
+                profile: "one".into(),
+            },
+        )
+        .unwrap();
+    let mut ambiguous = release("v2", false, 2, "bridge-extension-v2.zip");
+    ambiguous["assets"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id":3,"name":"bridge-extension-v3.zip","state":"uploaded"}));
+    for next in [
+        release("v2", false, 2, "other-extension.zip"),
+        ambiguous,
+        release("v2", false, 2, "bridge-extension-v2.zip"),
+    ] {
+        let gh = fixture(json!([[next]]), "v2", &[(2, archive("2"))]);
+        assert!(manager.check_release(&gh, &record.id).is_err());
+        assert_eq!(manager.list().unwrap(), vec![record.clone()]);
+    }
+    struct Denied;
+    impl Gh for Denied {
+        fn run(&self, _: &[String], _: usize) -> cepm_core::Result<Vec<u8>> {
+            Err("获取失败：404，来源不存在或无权访问；请检查 gh auth status".into())
+        }
+    }
+    let error = manager.check_release(&Denied, &record.id).err().unwrap();
+    assert!(error.contains("查询版本失败"));
+    assert!(error.contains("gh auth status"));
+    assert_eq!(manager.list().unwrap(), vec![record]);
+    let local = tempfile::tempdir().unwrap();
+    fs::write(local.path().join("manifest.json"), manifest).unwrap();
+    assert!(manager.preview_local(local.path()).is_ok());
 }

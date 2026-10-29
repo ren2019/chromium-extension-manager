@@ -18,6 +18,11 @@ impl GitHubRepo {
         if parts.len() != 2 {
             return Err("来源地址无效：请提供 github.com 的 owner/repo 或仓库地址".into());
         }
+        if !parts[0].starts_with(|c: char| c.is_ascii_alphanumeric())
+            || !parts[0].ends_with(|c: char| c.is_ascii_alphanumeric())
+        {
+            return Err("来源地址无效：GitHub 账户名无效".into());
+        }
         let name = parts[1].strip_suffix(".git").unwrap_or(parts[1]);
         if [parts[0], name].iter().any(|p| {
             p.is_empty()
@@ -108,24 +113,34 @@ pub trait Gh {
 pub struct CommandGh;
 impl Gh for CommandGh {
     fn run(&self, args: &[String], max_bytes: usize) -> Result<Vec<u8>> {
-        let mut child = Command::new("gh")
-            .args(args)
-            .env_remove("GH_DEBUG")
-            .env_remove("GH_FORCE_TTY")
-            .env("GH_PROMPT_DISABLED", "1")
-            .env("GH_PAGER", "cat")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    "获取失败：找不到 gh。请安装 GitHub CLI 并完成 gh auth login；本地目录仍可用"
-                        .into()
-                } else {
-                    format!("获取失败：无法启动 gh（{e}）。请检查 GitHub CLI 安装")
-                }
-            })?;
+        // Finder-launched apps may not inherit Homebrew's PATH.
+        #[cfg(target_os = "macos")]
+        let executables = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+        #[cfg(not(target_os = "macos"))]
+        let executables = ["gh"];
+        let mut spawned = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        for executable in executables {
+            spawned = Command::new(executable)
+                .args(args)
+                .env_remove("GH_DEBUG")
+                .env_remove("GH_FORCE_TTY")
+                .env("GH_PROMPT_DISABLED", "1")
+                .env("GH_PAGER", "cat")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+            if !matches!(&spawned, Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+                break;
+            }
+        }
+        let mut child = spawned.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "获取失败：找不到 gh。请安装 GitHub CLI 并完成 gh auth login；本地目录仍可用".into()
+            } else {
+                format!("获取失败：无法启动 gh（{e}）。请检查 GitHub CLI 安装")
+            }
+        })?;
         let stdout = child.stdout.take().ok_or("无法读取 gh 输出")?;
         let stderr = child.stderr.take().ok_or("无法读取 gh 错误")?;
         let out =
@@ -152,6 +167,7 @@ impl Gh for CommandGh {
         let output = out.join().map_err(|_| "读取 gh 输出失败")?;
         let error = err.join().map_err(|_| "读取 gh 错误失败")?;
         let status = status?;
+        let output = output?;
         if !status.success() {
             let stderr = String::from_utf8_lossy(error.as_deref().unwrap_or_default());
             let reason = if stderr.contains("401") || stderr.contains("auth login") {
@@ -165,7 +181,7 @@ impl Gh for CommandGh {
             };
             return Err(format!("获取失败：{reason}；已有安装未改动"));
         }
-        output
+        Ok(output)
     }
 }
 fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
@@ -208,6 +224,22 @@ pub fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
     }
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| format!("解压失败：无效 ZIP（{e}），请选择完整产物"))?;
+    // zip's index collapses identical names. Compare it with the archive's
+    // declared entry count so duplicate destinations cannot disappear here.
+    let footer = (0..bytes.len().saturating_sub(21))
+        .rev()
+        .take(65536)
+        .find(|&i| {
+            bytes.get(i..i + 4) == Some(b"PK\x05\x06")
+                && bytes.get(i + 20..i + 22).is_some_and(|v| {
+                    i + 22 + u16::from_le_bytes([v[0], v[1]]) as usize == bytes.len()
+                })
+        })
+        .ok_or("解压失败：ZIP 目录尾记录无效")?;
+    let entries = u16::from_le_bytes([bytes[footer + 10], bytes[footer + 11]]) as usize;
+    if bytes[footer + 4..footer + 8] != [0, 0, 0, 0] || entries != archive.len() {
+        return Err("解压失败：ZIP 包含重复条目、不支持的分卷或 ZIP64 目录".into());
+    }
     if archive.is_empty() || archive.len() > 10000 {
         return Err("解压失败：ZIP 为空或文件数量超过 10000".into());
     }
@@ -239,14 +271,14 @@ pub fn extract_zip(bytes: &[u8], destination: &Path) -> Result<()> {
         if ![0, 0o040000, 0o100000].contains(&mode) || (mode == 0o040000 && !file.is_dir()) {
             return Err("解压失败：ZIP 包含符号链接或特殊文件".into());
         }
-        let key = clean.nfkc().collect::<String>().to_lowercase();
+        let key = zip_key(clean);
         let mut spelling = String::new();
         for part in &parts {
             if !spelling.is_empty() {
                 spelling.push('/');
             }
             spelling.push_str(part);
-            let normalized = spelling.nfkc().collect::<String>().to_lowercase();
+            let normalized = zip_key(&spelling);
             if spellings
                 .insert(normalized, spelling.clone())
                 .is_some_and(|old| old != spelling)
@@ -309,3 +341,10 @@ fn reserved_name(name: &str) -> bool {
 pub use crate::releases::{
     Release, ReleaseArtifact, ReleaseAsset, ReleaseCatalog, ReleaseSelection,
 };
+
+fn zip_key(path: &str) -> String {
+    path.nfkc()
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
