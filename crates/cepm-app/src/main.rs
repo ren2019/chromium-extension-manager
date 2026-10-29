@@ -1,6 +1,8 @@
+use cepm_core::RemoteOrigin;
 use cepm_core::profiles::{
     BrowserLocation, BrowserProfile, ProfileBook, ProfileCandidate, discover_profiles,
 };
+use cepm_core::remote::{CommandGh, ReleaseArtifact, ReleaseCatalog, ReleaseSelection};
 use cepm_core::{Browser, Installation, Manager, Preview, UpdateKind, UpdatePlan, Verification};
 use gpui_kit::component::{
     button::*,
@@ -18,6 +20,12 @@ use std::{
 const GREEN: u32 = 0x23735a;
 const MUTED: u32 = 0x7b838a;
 const BORDER: u32 = 0xe7eaed;
+#[derive(Clone, Copy, PartialEq)]
+enum SourceKind {
+    Local,
+    Release,
+    Repository,
+}
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Library,
@@ -46,6 +54,15 @@ struct Desktop {
     page: Page,
     panel: Panel,
     add_step: u8,
+    source_kind: SourceKind,
+    source_update_id: Option<String>,
+    release_catalog: Option<ReleaseCatalog>,
+    release_tag: Option<String>,
+    release_asset: Option<u64>,
+    release_artifact: Option<ReleaseArtifact>,
+    remote_repo: Entity<InputState>,
+    remote_reference: Entity<InputState>,
+    remote_directory: Entity<InputState>,
     switcher: bool,
     show_technical: bool,
     checked: bool,
@@ -58,6 +75,68 @@ struct Desktop {
     status: String,
     error: bool,
     busy: bool,
+}
+enum PreparedSource {
+    New(Preview),
+    Update(UpdatePlan),
+}
+fn prepare_source(
+    manager: &Manager,
+    preview: Preview,
+    update_id: Option<String>,
+) -> cepm_core::Result<PreparedSource> {
+    match update_id {
+        Some(id) => manager
+            .prepare_update(&id, preview)
+            .map(PreparedSource::Update),
+        None => Ok(PreparedSource::New(preview)),
+    }
+}
+fn accept_source(view: &mut Desktop, prepared: PreparedSource) {
+    view.status.clear();
+    view.checked = false;
+    match prepared {
+        PreparedSource::New(preview) => {
+            view.preview = Some(preview);
+            view.add_step = 2;
+        }
+        PreparedSource::Update(plan) => {
+            view.update_plan = Some(plan);
+            view.panel = Panel::Update;
+        }
+    }
+}
+fn origin_description(origin: Option<&RemoteOrigin>) -> String {
+    match origin {
+        Some(RemoteOrigin::GitHubRelease {
+            tag,
+            asset_name,
+            root,
+            ..
+        }) => format!(
+            "Release {tag} · {asset_name} · {}",
+            if root.is_empty() {
+                "ZIP 根目录"
+            } else {
+                root
+            }
+        ),
+        Some(RemoteOrigin::GitHubDirectory {
+            reference,
+            commit,
+            subdirectory,
+            ..
+        }) => format!(
+            "引用 {reference} · 提交 {} · {}",
+            &commit[..commit.len().min(12)],
+            if subdirectory.is_empty() {
+                "仓库根目录"
+            } else {
+                subdirectory
+            }
+        ),
+        None => "本地目录".into(),
+    }
 }
 fn caption(text: impl Into<SharedString>) -> Div {
     div().text_sm().text_color(rgb(MUTED)).child(text.into())
@@ -135,6 +214,15 @@ impl Desktop {
             page: Page::Library,
             panel: Panel::None,
             add_step: 1,
+            source_kind: SourceKind::Local,
+            source_update_id: None,
+            release_catalog: None,
+            release_tag: None,
+            release_asset: None,
+            release_artifact: None,
+            remote_repo: input(window, cx, "owner/repository 或 GitHub 地址"),
+            remote_reference: input(window, cx, "分支、标签或完整提交，例如 main"),
+            remote_directory: input(window, cx, "仓库内预构建扩展目录，例如 dist/chrome"),
             switcher: false,
             show_technical: false,
             checked: false,
@@ -487,7 +575,13 @@ impl Desktop {
         self.work(
             "正在读取来源并检查版本…",
             cx,
-            move |m| m.check_local(&record.id),
+            move |m| match record.origin {
+                Some(RemoteOrigin::GitHubRelease { .. }) => m.check_release(&CommandGh, &record.id),
+                Some(RemoteOrigin::GitHubDirectory { .. }) => {
+                    m.check_repository(&CommandGh, &record.id)
+                }
+                None => m.check_local(&record.id),
+            },
             |v, plan| {
                 v.status = if plan.kind() == UpdateKind::Unchanged {
                     "来源文件与安装版本一致".into()
@@ -547,6 +641,265 @@ impl Desktop {
                 v.status = "上一份文件已恢复；仍需重新加载并核对，才会记录生效".into();
             },
         );
+    }
+    fn load_releases(&mut self, cx: &mut Context<Self>) {
+        let source = self.remote_repo.read(cx).value().trim().to_owned();
+        self.release_catalog = None;
+        self.release_artifact = None;
+        self.work(
+            "正在通过 gh 获取发布版本…",
+            cx,
+            move |m| m.list_releases(&CommandGh, &source),
+            |v, catalog| {
+                v.release_tag = catalog
+                    .requested_tag
+                    .clone()
+                    .or(catalog.default_tag.clone());
+                v.release_asset = v
+                    .release_tag
+                    .as_deref()
+                    .and_then(|tag| catalog.preselected_asset(tag));
+                v.release_catalog = Some(catalog);
+                v.status.clear();
+            },
+        );
+    }
+    fn fetch_release(&mut self, cx: &mut Context<Self>) {
+        let source = self.remote_repo.read(cx).value().trim().to_owned();
+        let selection = ReleaseSelection {
+            tag: self.release_tag.clone(),
+            asset_id: self.release_asset,
+        };
+        self.work(
+            "正在获取 ZIP 并检查产物位置…",
+            cx,
+            move |m| m.preview_release(&CommandGh, &source, &selection),
+            |v, artifact| {
+                v.release_artifact = Some(artifact);
+                v.status = "请选择 ZIP 内的完整扩展产物目录".into();
+            },
+        );
+    }
+    fn select_release_root(&mut self, root: String, cx: &mut Context<Self>) {
+        let Some(artifact) = self.release_artifact.take() else {
+            return;
+        };
+        let update_id = self.source_update_id.clone();
+        self.work(
+            "正在冻结与校验扩展产物…",
+            cx,
+            move |m| {
+                let preview = artifact.select_root(Some(&root))?;
+                prepare_source(m, preview, update_id)
+            },
+            accept_source,
+        );
+    }
+    fn fetch_repository(&mut self, cx: &mut Context<Self>) {
+        let repository = self.remote_repo.read(cx).value().trim().to_owned();
+        let reference = self.remote_reference.read(cx).value().trim().to_owned();
+        let directory = self.remote_directory.read(cx).value().trim().to_owned();
+        let update_id = self.source_update_id.clone();
+        self.work(
+            "正在解析引用并获取完整扩展目录…",
+            cx,
+            move |m| {
+                let preview =
+                    m.preview_repository(&CommandGh, &repository, &reference, &directory)?;
+                prepare_source(m, preview, update_id)
+            },
+            accept_source,
+        );
+    }
+    fn choose_remote_version(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(record) = self.current_record() else {
+            return;
+        };
+        let Some(origin) = record.origin else { return };
+        self.open_panel(Panel::Add, window, cx);
+        self.source_update_id = Some(record.id);
+        self.add_step = 1;
+        self.release_catalog = None;
+        self.release_artifact = None;
+        match origin {
+            RemoteOrigin::GitHubRelease { repo, .. } => {
+                self.source_kind = SourceKind::Release;
+                self.remote_repo
+                    .update(cx, |s, cx| s.set_value(repo.slug(), window, cx));
+            }
+            RemoteOrigin::GitHubDirectory {
+                repo,
+                reference,
+                subdirectory,
+                ..
+            } => {
+                self.source_kind = SourceKind::Repository;
+                self.remote_repo
+                    .update(cx, |s, cx| s.set_value(repo.slug(), window, cx));
+                self.remote_reference
+                    .update(cx, |s, cx| s.set_value(reference, window, cx));
+                self.remote_directory
+                    .update(cx, |s, cx| s.set_value(subdirectory, window, cx));
+            }
+        }
+    }
+    fn source_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let disabled = self.busy;
+        let mut content = v_flex().gap_4();
+        if self.source_update_id.is_none() {
+            let mut kinds = h_flex().gap_2();
+            for (kind, id, label) in [
+                (SourceKind::Local, "local-source", "本地文件夹"),
+                (SourceKind::Release, "release-source", "GitHub Release"),
+                (SourceKind::Repository, "repository-source", "仓库子目录"),
+            ] {
+                kinds = kinds.child(
+                    Button::new(id)
+                        .label(label)
+                        .selected(self.source_kind == kind)
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            v.source_kind = kind;
+                            v.release_catalog = None;
+                            v.release_artifact = None;
+                            cx.notify();
+                        })),
+                );
+            }
+            content = content.child(kinds);
+        }
+        match self.source_kind {
+            SourceKind::Local => {
+                content = content
+                    .child(heading("选择完整的扩展文件夹"))
+                    .child(caption("包含 manifest.json 和所需文件，不运行构建脚本。"))
+                    .child(
+                        Button::new("choose-source")
+                            .label("▱ 选择本地扩展文件夹")
+                            .disabled(disabled)
+                            .on_click(cx.listener(|v, _, _, cx| v.choose_source(cx))),
+                    );
+            }
+            SourceKind::Repository => {
+                content = content
+                    .child(heading("选择仓库中的扩展产物"))
+                    .child(caption(
+                        "支持私有仓库，由本机 gh 提供访问。只获取已有产物，不执行仓库脚本。",
+                    ))
+                    .child(Input::new(&self.remote_repo).disabled(disabled))
+                    .child(Input::new(&self.remote_reference).disabled(disabled))
+                    .child(Input::new(&self.remote_directory).disabled(disabled))
+                    .child(caption(
+                        "分支用于跟随更新；标签或提交可选择任意版本。目录留空表示仓库根目录。",
+                    ))
+                    .child(
+                        Button::new("fetch-repository")
+                            .primary()
+                            .label("预览此引用的产物")
+                            .disabled(disabled)
+                            .on_click(cx.listener(|v, _, _, cx| v.fetch_repository(cx))),
+                    );
+            }
+            SourceKind::Release => {
+                content = content
+                    .child(heading("选择发布版本与 ZIP 产物"))
+                    .child(caption(
+                        "支持私有仓库，访问由本机 gh 管理。先选择版本，再确认 ZIP 中的扩展目录。",
+                    ))
+                    .child(Input::new(&self.remote_repo).disabled(disabled))
+                    .child(
+                        Button::new("list-releases")
+                            .label("获取发布版本")
+                            .disabled(disabled)
+                            .on_click(cx.listener(|v, _, _, cx| v.load_releases(cx))),
+                    );
+                if let Some(catalog) = &self.release_catalog {
+                    let mut versions = v_flex()
+                        .id("release-versions")
+                        .max_h(px(180.))
+                        .overflow_y_scroll()
+                        .gap_1();
+                    for release in &catalog.releases {
+                        let tag = release.tag_name.clone();
+                        versions = versions.child(
+                            Button::new(SharedString::from(format!("tag-{tag}")))
+                                .label(format!(
+                                    "{}{}",
+                                    tag,
+                                    if release.prerelease {
+                                        " · 预发布"
+                                    } else {
+                                        ""
+                                    }
+                                ))
+                                .selected(self.release_tag.as_ref() == Some(&tag))
+                                .disabled(disabled)
+                                .on_click(cx.listener(move |v, _, _, cx| {
+                                    v.release_tag = Some(tag.clone());
+                                    v.release_asset = v
+                                        .release_catalog
+                                        .as_ref()
+                                        .and_then(|c| c.preselected_asset(&tag));
+                                    v.release_artifact = None;
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    content = content
+                        .child(caption("发布版本（可选择任意版本）"))
+                        .child(versions);
+                    if let Some(release) = catalog
+                        .releases
+                        .iter()
+                        .find(|r| Some(&r.tag_name) == self.release_tag.as_ref())
+                    {
+                        for asset in &release.assets {
+                            let id = asset.id;
+                            content = content.child(
+                                Button::new(SharedString::from(format!("asset-{id}")))
+                                    .label(format!("{} · {} KB", asset.name, asset.size / 1024))
+                                    .selected(self.release_asset == Some(id))
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(move |v, _, _, cx| {
+                                        v.release_asset = Some(id);
+                                        v.release_artifact = None;
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                    }
+                    content = content.child(
+                        Button::new("fetch-release")
+                            .primary()
+                            .label("下载并检查所选 ZIP")
+                            .disabled(
+                                disabled
+                                    || self.release_tag.is_none()
+                                    || self.release_asset.is_none(),
+                            )
+                            .on_click(cx.listener(|v, _, _, cx| v.fetch_release(cx))),
+                    );
+                }
+                if let Some(artifact) = &self.release_artifact {
+                    content = content.child(caption("ZIP 中可安装的扩展目录"));
+                    for (index, root) in artifact.roots().into_iter().enumerate() {
+                        content = content.child(
+                            Button::new(SharedString::from(format!("root-{index}")))
+                                .label(if root.is_empty() {
+                                    "ZIP 根目录".into()
+                                } else {
+                                    root.clone()
+                                })
+                                .disabled(disabled)
+                                .on_click(cx.listener(move |v, _, _, cx| {
+                                    v.select_release_root(root.clone(), cx)
+                                })),
+                        );
+                    }
+                }
+            }
+        }
+        content.into_any_element()
     }
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let scoped = self.scoped();
@@ -744,6 +1097,7 @@ impl Desktop {
                                 .disabled(disabled)
                                 .on_click(cx.listener(|v, _, w, cx| {
                                     v.add_step = 1;
+                                    v.source_update_id = None;
                                     v.preview = None;
                                     v.open_panel(Panel::Add, w, cx);
                                 })),
@@ -855,6 +1209,7 @@ impl Desktop {
                                 .label("添加第一个扩展")
                                 .on_click(cx.listener(|v, _, w, cx| {
                                     v.add_step = 1;
+                                    v.source_update_id = None;
                                     v.open_panel(Panel::Add, w, cx);
                                 })),
                         )
@@ -865,6 +1220,7 @@ impl Desktop {
                 div()
                     .id("extension-list")
                     .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .children(visible.into_iter().map(|r| {
                         let id = r.id.clone();
@@ -1108,15 +1464,7 @@ impl Desktop {
                     );
                 match self.add_step {
                     1 => {
-                        content = content
-                            .child(heading("选择完整的扩展文件夹"))
-                            .child(caption("包含 manifest.json 和所需文件，不运行构建脚本。"))
-                            .child(
-                                Button::new("choose-source")
-                                    .label("▱ 选择本地扩展文件夹")
-                                    .disabled(disabled)
-                                    .on_click(cx.listener(|v, _, _, cx| v.choose_source(cx))),
-                            );
+                        content = content.child(self.source_picker(cx));
                     }
                     2 => {
                         if let Some(p) = &self.preview {
@@ -1127,7 +1475,8 @@ impl Desktop {
                                             .gap_2()
                                             .child(heading(p.name().to_string()))
                                             .child(format!("扩展版本 {}", p.version()))
-                                            .child(caption(p.source().display().to_string())),
+                                            .child(caption(p.source().display().to_string()))
+                                            .child(caption(origin_description(p.origin()))),
                                     ),
                                 )
                                 .child(caption("CEPM 会复制到独立固定目录。来源移动不会影响安装。"))
@@ -1236,6 +1585,16 @@ impl Desktop {
                                         cx.listener(|v, _, _, cx| v.choose_local_version(cx)),
                                     ),
                             )
+                            .when(r.origin.is_some(), |v| {
+                                v.child(
+                                    Button::new("choose-remote-version")
+                                        .label("选择其他远程版本…")
+                                        .disabled(disabled || !self.target_ready())
+                                        .on_click(cx.listener(|v, _, w, cx| {
+                                            v.choose_remote_version(w, cx)
+                                        })),
+                                )
+                            })
                             .when(pending && !r.recovery_required, |v| {
                                 v.child(
                                     Button::new("detail-guide")
@@ -1266,6 +1625,9 @@ impl Desktop {
                                         "扩展 ID：{}",
                                         r.extension_id.as_deref().unwrap_or("首次加载后核对")
                                     )))
+                                    .when(r.origin.is_some(), |v| {
+                                        v.child(caption(origin_description(r.origin.as_ref())))
+                                    })
                                     .child(caption(format!(
                                         "配置目录：{}",
                                         profile.profile_path().display()
@@ -1463,6 +1825,8 @@ impl Render for Desktop {
                                 .child(
                                     div()
                                         .id("panel-scroll")
+                                        .flex_1()
+                                        .min_h_0()
                                         .overflow_y_scroll()
                                         .p_5()
                                         .child(self.panel_content(cx)),
