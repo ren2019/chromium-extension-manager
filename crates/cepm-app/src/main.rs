@@ -609,7 +609,17 @@ impl Desktop {
                         p.name.clone(),
                     )
                 });
+                let mut group = String::new();
                 for p in profiles {
+                    let next_group = if book.pinned_ids().contains(&p.id) {
+                        "置顶".to_owned()
+                    } else {
+                        format!("{:?}", p.browser)
+                    };
+                    if group != next_group {
+                        menu = menu.child(div().pt_2().child(caption(next_group.clone())));
+                        group = next_group;
+                    }
                     let id = p.id.clone();
                     let pin_id = p.id.clone();
                     let pinned = book.pinned_ids().contains(&p.id);
