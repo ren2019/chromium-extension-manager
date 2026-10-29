@@ -1,4 +1,5 @@
 //! Installation use cases, independent of the desktop UI.
+mod releases;
 pub mod remote;
 mod updates;
 use fs2::FileExt;
