@@ -1,71 +1,80 @@
 # Chromium Extension Package Manager
 
-非商店 Chromium 扩展包管理器（CEPM），为预构建扩展提供安装、版本检查、更新和结果验证能力。
+CEPM 是管理非商店 Chromium 扩展的 Rust + GPUI 桌面应用：把本地目录、GitHub Release ZIP 或仓库子目录中的完整扩展产物安装到固定目录，随后检查版本、更新和恢复旧文件。
 
-## 项目起点
+先在左侧选择浏览器与 Profile，再维护该配置中的安装。多个常用配置可以置顶；重开应用会恢复最后选择。文件部署和浏览器生效分别记录，首次加载、更新后重载与版本核对通过浏览器原生扩展页完成。
 
-[产品需求文档（PRD v0.4）](./prd-chromium-extension-package-manager.md) 从 Downloads 导入，初始原文保存在首次提交中；设计访谈决策已合入正文，第 17 节汇总当前基线。
+Windows/macOS、Chrome/Edge 是产品目标。本轮实际验收范围为 macOS Chrome；按用户决定不再做 Windows/Edge 专项验证，不能把此前的跨平台构建结果视为完整兼容性保证。
 
-设计访谈已收口：采用 Rust 核心与 GPUI/gpui-kit 界面，已实现本地目录安装与用户确认切片。用户已取消后续 Windows/Edge 验证门槛；这些平台仍是支持目标，未测行为不声明已验证兼容。后续任务见实现规格。
+## 获取与运行
 
-## MVP 范围
+[GitHub Actions](https://github.com/ren2019/chromium-extension-manager/actions/workflows/ci.yml) 在检查通过后提供 `CEPM-macos-<架构>-debug` 制品。下载并解开其中的 ZIP 后打开 `CEPM.app`。制品是运行机器架构的开发构建，**未使用 Developer ID 签名或公证**，不是通用二进制；下载件可能受到 macOS 安全策略限制。也可以按下面步骤从源码构建。
 
-- 目标平台：Windows 和 macOS，优先支持 Microsoft Edge 和 Google Chrome。
-- 扩展来源：公开及私有 GitHub Release ZIP、仓库内可直接加载的扩展子目录、本地目录；首版不自动构建源码。
-- 远程获取与认证：调用相应外部 CLI，由 CLI 管理 Token；本项目不提供登录或凭据管理。
-- 核心流程：添加来源、下载校验、固定目录安装、检查更新、选择版本（含降级）和生效版本验证。
-- 浏览器加载：优先服务现有日常配置，允许首次手动加载；受管环境作为可选的自动化模式。
-- 生效确认：可靠自动检查不可用时，允许用户手动重载并核对版本，结果明确标记为用户确认。
-- 可靠性要求：更新前备份，失败不破坏旧版，检测本地修改，区分磁盘版本与实际生效版本。
-- 首个验收案例：OpenCLI Browser Bridge。
+仅安装本地目录不需要 GitHub CLI。GitHub 来源要求已安装并授权的 `gh`，权限和 Token 由它管理：
 
-完整需求、优先级和验收标准以 PRD 为准。
+```sh
+gh auth login
+gh auth status
+```
 
-## 实施起点
+macOS 从 Finder 启动时可能没有终端的完整 PATH。CEPM 会在找不到 `gh` 时尝试 Homebrew 常用路径 `/opt/homebrew/bin/gh` 和 `/usr/local/bin/gh`。自定义安装位置应加入启动进程的 PATH；也可从已能运行 `gh auth status` 的终端直接启动应用中的可执行文件：
 
-按 PRD 与已完成实验开始实现“固定安装目录 + 首次手动加载 + 更新后手动重载”的最小路径；磁盘安装版本与生效版本必须分开记录。不再为开工补做 Windows/Edge 验证。
+```sh
+/path/to/CEPM.app/Contents/MacOS/cepm-app
+```
 
-- [最小验证结果、证据与剩余检查](./docs/validation/minimal-feasibility.md)
-- [实验代码及运行方法](https://github.com/ren2019/chromium-extension-manager/tree/prototype/gpui-browser-feasibility/prototypes)（仅在实验分支）
-- [Windows / macOS 构建与可下载制品](https://github.com/ren2019/chromium-extension-manager/actions/runs/40826295319)
-- [MVP 实现规格](./docs/plans/mvp-spec.md) / [规格与 5 个开发任务](https://github.com/ren2019/chromium-extension-manager/issues/2)
+## 使用流程
 
-## 协作配置
+1. **选择配置**：在左侧顶部添加或选择具体浏览器 Profile。可使用发现的候选，也可从 `chrome://version` / `edge://version` 复制 Profile Path，并指定浏览器应用。配置必须已存在；找不到时暂停维护，不自动改用其他配置。
+2. **添加来源**：选择本地完整扩展目录；或输入 GitHub 仓库/Release 地址并选择标签和 ZIP；或指定仓库、分支/标签/提交与扩展子目录。工具不会构建源码。安装版本以 `manifest.json.version` 为准，不必等于仓库 Release 标签。
+3. **确认并安装**：预览扩展名称、清单版本和目标配置，再确认。存在多个附件或扩展根目录时由你选择。CEPM 校验后复制到独立的固定安装目录，来源目录可另行移动。
+4. **首次加载**：打开当前 Profile 的原生扩展管理页，开启开发者模式，选择“加载已解压的扩展程序”，使用 CEPM 提供的固定目录。核对浏览器中显示的 ID、版本和 Profile 后回到 CEPM 确认。打开管理页或完成复制都不会自动标为已生效。
+5. **维护更新**：检查当前配置中的安装，预览目标版本后更新。批量操作仅执行普通升级，逐项报告结果；一项失败不撤销其他项。旧版降级与同版本内容变化均单独确认。部署后在原生页重载，再回到 CEPM 核对。
 
-任务与规格使用 [GitHub Issues](https://github.com/ren2019/chromium-extension-manager/issues) 跟踪。
+同一扩展在不同 Profile 是独立安装。原生页继续负责启停、权限和移除；CEPM 不接管已有扩展，也不会自动关闭浏览器。退出 CEPM 后固定目录仍保留，扩展可以继续使用。
 
-Agent 入口为 [AGENTS.md](./AGENTS.md)，具体约定见：
+## 失败与恢复
 
-- [任务跟踪](./docs/agents/issue-tracker.md)
-- [分流标签](./docs/agents/triage-labels.md)
-- [领域文档](./docs/agents/domain.md)
+获取、归档或清单校验失败时修复提示中的原因后重试。固定安装目录被手动修改时更新会暂停，避免覆盖修改。部署后明确加载失败，可在详情中报告失败并恢复旧文件；恢复后仍需浏览器重载和核对。无法读取浏览器状态只表示待验证，不等于加载失败。
 
-这些配置可直接编辑。术语表和架构决策记录在实际需要时创建。
+旧生效确认在更新后仅作历史记录。文件恢复不能撤销扩展自己已执行的数据迁移；不要把降级视为扩展数据的无损回滚。恢复异常会显示“恢复需要处理”，此时先保留安装目录和备份，按错误说明处理。
 
-## 本地开发
+## 数据与开发
 
-需要 Rust 工具链；GPUI 的原生依赖以目标系统为准。本机 macOS 使用 Command Line Tools 已可构建。
+应用使用操作系统的用户应用数据目录，保存安装记录、Profile 偏好、固定安装目录及必要的恢复文件。**不要移动或删除该数据目录**，浏览器加载的固定路径依赖它。复制或重新构建 `CEPM.app` 不会迁移、清除这些数据。
+
+源码构建需要 Rust 工具链和 macOS Command Line Tools，原生依赖以 GPUI 为准：
 
 ```sh
 cargo run -p cepm-app --locked
 ```
 
-当前开发切片支持本地目录预览、固定目录安装和用户核对确认。更新、GitHub 来源及批量处理由后续任务实现。应用默认使用操作系统的用户应用数据目录；可用 `CEPM_DATA_DIR` 指定独立测试数据目录。
+制作本机架构的 `.app` 和 ZIP（默认 debug 开发构建；可传 `release`）：
+
+```sh
+scripts/package-macos.sh debug
+open target/bundle/debug/CEPM.app
+```
+
+脚本输出到 Cargo 目标目录的 `bundle/<debug|release>/`，ZIP 附带 SHA-256 文件。它只包装本机默认目标，不执行签名或公证；设置了 `CARGO_BUILD_TARGET` 时应先取消设置。
+
+测试数据可单独存放，正常运行应持续使用同一路径：
 
 ```sh
 CEPM_DATA_DIR="$PWD/.scratch/app-data" cargo run -p cepm-app --locked
-cargo test -p cepm-core --locked
+cargo fmt --all --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-选择完整的 Manifest V3 扩展目录，填写目标浏览器配置名称并确认安装。按应用中的指引加载固定目录后，填写浏览器实际显示的 ID 和版本；应用记录为“用户已确认”，不把文件复制当成生效确认。关闭窗口即可退出；保留应用数据目录以维持扩展安装路径。
+主要测试入口是 Rust 安装用例与真实临时文件系统，仅在外部 CLI 边界提供可控响应。原生 GUI 和实际浏览器流程采用少量 macOS 冒烟验收；具体通过项以 [验证记录](./docs/validation/) 为准。
 
-## 设计调研
+## 规格与协作
 
-- [OpenLogi 技术栈、技能与 AST 工具](./docs/research/openlogi-stack.md)
-- [GitHub 扩展发布范式样本](./docs/research/extension-distribution.md)
-- [本地目录版本声明](./docs/research/local-directory-version.md)
-- [私有 GitHub 认证方案](./docs/research/private-github-auth.md)
-- [浏览器状态验证与重载](./docs/research/browser-verification.md)
-- [已确认：扩展安装必须独立于管理器持续可用](./docs/adr/0001-persistent-browser-installation.md)
+- [PRD v0.5](./prd-chromium-extension-package-manager.md)、[MVP 实现规格](./docs/plans/mvp-spec.md)、[已批准的 A 用户旅程](./docs/plans/approved-user-journey.md)
+- [规格与 5 个开发任务](https://github.com/ren2019/chromium-extension-manager/issues/2)、[GitHub Issues](https://github.com/ren2019/chromium-extension-manager/issues)
+- [最小实验及未验证范围](./docs/validation/minimal-feasibility.md)、[独立 HTML 原型分支](https://github.com/ren2019/chromium-extension-manager/tree/prototype/user-journey/prototypes/user-journey)
+- [AGENTS.md](./AGENTS.md)、[任务跟踪约定](./docs/agents/issue-tracker.md)、[领域术语](./GLOSSARY.md)、[架构决策](./docs/adr/)
+- [OpenLogi 技术栈调研](./docs/research/openlogi-stack.md)、[扩展发布范式调研](./docs/research/extension-distribution.md)
 
-调研文档中的建议不等同于已确认决策；产品范围以 PRD 中的访谈记录为准。
+初始 PRD 从 Downloads 导入，原文保存在首次提交中。后续访谈决策和批准的原型共同构成当前实现基线。
