@@ -229,6 +229,7 @@ fn io_error(error: std::io::Error) -> String {
 fn valid_version(version: &str) -> bool {
     let parts: Vec<_> = version.split('.').collect();
     (1..=4).contains(&parts.len())
+        && parts.iter().any(|part| *part != "0")
         && parts.iter().all(|part| {
             !part.is_empty()
                 && part.bytes().all(|b| b.is_ascii_digit())
@@ -248,7 +249,7 @@ fn validate_manifest(manifest: &serde_json::Value, root: &Path) -> Result<()> {
         return Err("清单名称不能为空".into());
     }
     if !manifest["version"].as_str().is_some_and(valid_version) {
-        return Err("扩展版本应为 1–4 段 0–65535 整数，不能有前导零".into());
+        return Err("扩展版本应为 1–4 段 0–65535 整数，不能有前导零或全部为零".into());
     }
     let resource = |value: &serde_json::Value| -> Result<()> {
         let path = value.as_str().ok_or("清单资源路径必须为文本")?;

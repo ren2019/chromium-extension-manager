@@ -54,6 +54,7 @@ fn invalid_or_incomplete_artifacts_are_rejected_before_any_installation() {
         r#"{"manifest_version":3,"name":" ","version":"1"}"#,
         r#"{"manifest_version":3,"name":"x","version":"1.02"}"#,
         r#"{"manifest_version":3,"name":"x","version":"65536"}"#,
+        r#"{"manifest_version":3,"name":"x","version":"0.0.0.0"}"#,
         r#"{"manifest_version":3,"name":"x","version":"1.2.3.4.5"}"#,
         r#"{"manifest_version":3,"name":"x","version":"1","background":{"service_worker":"missing.js"}}"#,
         r#"{"manifest_version":3,"name":"x","version":"1","content_scripts":[{"matches":["https://example.com/*"],"js":["missing.js"]}]}"#,

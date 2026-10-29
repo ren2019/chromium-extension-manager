@@ -1,10 +1,13 @@
 name: Rust checks
 on:
   push:
-    branches: [main, feat/local-install]
+    branches: [main]
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: rust-checks-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   macos:
     runs-on: macos-latest
