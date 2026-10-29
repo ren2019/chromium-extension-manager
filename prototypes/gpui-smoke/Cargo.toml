@@ -1,0 +1,15 @@
+[package]
+name = "cepm-gpui-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gpui-kit = "=0.8.1"
+rfd = "0.15"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = "symbols"

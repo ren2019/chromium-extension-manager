@@ -1,0 +1,48 @@
+name: Prototype feasibility
+on:
+  push:
+    branches: [prototype/gpui-browser-feasibility]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prototype-feasibility-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gpui-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: prototypes/gpui-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustc --version; cargo --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prototypes/gpui-smoke
+      - name: Build native executable
+        run: cargo build --locked
+      - name: Executable startup (no GUI assertion)
+        run: cargo run --locked -- --version
+      - name: Package unsigned macOS app
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p 'dist/CEPM GPUI Prototype.app/Contents/MacOS'
+          cp target/debug/cepm-gpui-prototype 'dist/CEPM GPUI Prototype.app/Contents/MacOS/'
+          cp Info.plist 'dist/CEPM GPUI Prototype.app/Contents/'
+          ditto -c -k --keepParent 'dist/CEPM GPUI Prototype.app' dist/cepm-gpui-macos.zip
+      - name: Package Windows portable executable
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Compress-Archive target/debug/cepm-gpui-prototype.exe dist/cepm-gpui-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpui-prototype-${{ runner.os }}
+          path: prototypes/gpui-smoke/dist/*.zip
