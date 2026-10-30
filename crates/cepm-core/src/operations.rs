@@ -86,7 +86,11 @@ impl Manager {
             Ok(()) => (
                 OperationStatus::Succeeded,
                 "操作已完成",
-                "磁盘变更仍需在目标浏览器重载并核对",
+                match stage {
+                    OperationStage::Confirm => "浏览器生效版本已确认",
+                    OperationStage::Check => "可在扩展详情中查看检查结果",
+                    _ => "磁盘变更仍需在目标浏览器重载并核对",
+                },
             ),
             Err(error) => {
                 let (reason, next_step) = diagnosis(error);

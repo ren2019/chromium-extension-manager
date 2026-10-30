@@ -135,3 +135,32 @@ fn invalid_manifest_diagnostics_request_a_valid_artifact_after_reopening() {
         );
     }
 }
+
+#[test]
+fn successful_history_only_requests_browser_reload_after_file_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = Target {
+        browser: Browser::Edge,
+        profile: "personal".into(),
+    };
+    for (stage, expected) in [
+        (OperationStage::Confirm, "浏览器生效版本已确认"),
+        (OperationStage::Check, "可在扩展详情中查看检查结果"),
+        (OperationStage::Deploy, "磁盘变更仍需在目标浏览器重载并核对"),
+        (
+            OperationStage::Recover,
+            "磁盘变更仍需在目标浏览器重载并核对",
+        ),
+    ] {
+        let manager = Manager::open(temp.path()).unwrap();
+        manager
+            .record_operation(&target, None, stage, Ok(()))
+            .unwrap();
+        drop(manager);
+        let manager = Manager::open(temp.path()).unwrap();
+        let history = manager.operation_history(&target).unwrap();
+        let event = history.iter().find(|event| event.stage == stage).unwrap();
+        assert_eq!(event.status, OperationStatus::Succeeded);
+        assert_eq!(event.next_step, expected, "{stage:?}");
+    }
+}
