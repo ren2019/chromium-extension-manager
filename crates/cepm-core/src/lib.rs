@@ -1,6 +1,7 @@
 //! Installation use cases, independent of the desktop UI.
 pub mod bulk;
 pub mod operations;
+pub mod presentation;
 pub mod profiles;
 mod releases;
 pub mod remote;
@@ -160,6 +161,7 @@ impl Manager {
         let install_dir = self.root.join("installations").join(&id);
         let content_digest = updates::directory_digest(preview.snapshot.path())?;
         fs::rename(preview.snapshot.path(), &install_dir).map_err(io_error)?;
+        let installed_at = updates::now();
         let record = Installation {
             id,
             name: preview.name,
@@ -174,8 +176,8 @@ impl Manager {
             generation: 1,
             content_digest,
             historical_version: None,
-            installed_at: updates::now(),
-            updated_at: updates::now(),
+            installed_at,
+            updated_at: installed_at,
             last_operation: "文件已安装，等待浏览器加载与核对".into(),
             recovery_required: false,
         };
