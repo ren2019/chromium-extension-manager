@@ -358,3 +358,31 @@ fn invalid_resolved_commits_and_input_refs_are_rejected_before_installation() {
     }
     assert!(manager.list().unwrap().is_empty());
 }
+
+#[test]
+fn reinstall_fetches_saved_commit_without_changing_tracking_reference() {
+    let temp = TempDir::new().unwrap();
+    let mut manager = Manager::open(&temp.path().join("managed")).unwrap();
+    let gh = RepositoryGh {
+        reference: "main".into(),
+        commit: COMMIT.into(),
+        archive: artifact("1", "original"),
+    };
+    let preview = manager
+        .preview_repository(&gh, "private-owner/extension", "main", "packages/extension")
+        .unwrap();
+    let old = manager.install_local(preview, target()).unwrap();
+    let exact = RepositoryGh {
+        reference: COMMIT.into(),
+        ..gh
+    };
+    let plan = manager
+        .prepare_reinstall(&exact, &old.id, &target(), old.generation)
+        .unwrap();
+    let repaired = manager
+        .apply_update(plan, cepm_core::UpdateKind::Redeploy)
+        .unwrap();
+    assert_eq!(repaired.origin, old.origin);
+    assert_eq!(repaired.installed_version, "1");
+    assert_eq!(repaired.install_dir, old.install_dir);
+}

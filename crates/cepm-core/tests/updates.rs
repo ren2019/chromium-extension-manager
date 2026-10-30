@@ -410,3 +410,200 @@ fn damaged_backup_does_not_replace_current_files_and_remains_visibly_unresolved(
         "new"
     );
 }
+
+#[test]
+fn reported_failure_keeps_deployed_files_and_history_until_explicit_restore() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("managed");
+    artifact(&source, "1", "old");
+    let mut manager = Manager::open(&root).unwrap();
+    let old = manager
+        .install_local(manager.preview_local(&source).unwrap(), target())
+        .unwrap();
+    manager
+        .confirm_manual(&old.id, &target(), old.generation, "1")
+        .unwrap();
+    artifact(&source, "2", "new");
+    let deployed = manager
+        .apply_update(manager.check_local(&old.id).unwrap(), UpdateKind::Upgrade)
+        .unwrap();
+    let failed = manager
+        .report_browser_failure(&old.id, &target(), deployed.generation)
+        .unwrap();
+    assert!(failed.load_failed);
+    assert_eq!(failed.installed_version, "2");
+    assert_eq!(failed.historical_version.as_deref(), Some("1"));
+    assert_eq!(failed.updated_at, deployed.updated_at);
+    assert_eq!(
+        fs::read_to_string(failed.install_dir.join("worker.js")).unwrap(),
+        "new"
+    );
+    drop(manager);
+    let mut manager = Manager::open(&root).unwrap();
+    assert!(manager.list().unwrap()[0].load_failed);
+    let restored = manager
+        .restore_previous_files(&old.id, &target(), failed.generation)
+        .unwrap();
+    assert_eq!(restored.installed_version, "1");
+    assert!(!restored.load_failed);
+    assert_eq!(restored.verification, Verification::Pending);
+}
+
+struct NoRemote;
+impl cepm_core::remote::Gh for NoRemote {
+    fn run(&self, _: &[String], _: usize) -> cepm_core::Result<Vec<u8>> {
+        panic!("local repair must not fetch remotely")
+    }
+}
+
+#[test]
+fn repeated_identical_reinstallation_keeps_original_recovery_backup() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("managed");
+    artifact(&source, "1", "original");
+    let mut manager = Manager::open(&root).unwrap();
+    let old = manager
+        .install_local(manager.preview_local(&source).unwrap(), target())
+        .unwrap();
+    manager
+        .confirm_manual(&old.id, &target(), old.generation, "1")
+        .unwrap();
+    artifact(&source, "2", "broken");
+    let mut current = manager
+        .apply_update(manager.check_local(&old.id).unwrap(), UpdateKind::Upgrade)
+        .unwrap();
+    for _ in 0..2 {
+        current = manager
+            .report_browser_failure(&old.id, &target(), current.generation)
+            .unwrap();
+        let repair = manager
+            .prepare_reinstall(&NoRemote, &old.id, &target(), current.generation)
+            .unwrap();
+        current = manager.apply_update(repair, UpdateKind::Redeploy).unwrap();
+        assert_eq!(current.installed_version, "2");
+        assert_eq!(current.install_dir, old.install_dir);
+        assert_eq!(current.historical_version.as_deref(), Some("1"));
+        assert_eq!(current.verification, Verification::Pending);
+        assert!(!current.load_failed);
+        drop(manager);
+        manager = Manager::open(&root).unwrap();
+    }
+    assert!(
+        manager
+            .confirm_manual(&old.id, &target(), old.generation, "2")
+            .is_err()
+    );
+    let restored = manager
+        .restore_previous_files(&old.id, &target(), current.generation)
+        .unwrap();
+    assert_eq!(restored.installed_version, "1");
+    assert_eq!(
+        fs::read_to_string(restored.install_dir.join("worker.js")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn interrupted_repairs_preserve_the_original_backup_and_can_be_retried() {
+    use cepm_core::UpdateStage;
+    for stop_at in [
+        UpdateStage::Prepared,
+        UpdateStage::BackedUp,
+        UpdateStage::FilesDeployed,
+        UpdateStage::RecordSaved,
+        UpdateStage::AwaitingConfirmation,
+    ] {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let root = temp.path().join("managed");
+        artifact(&source, "1", "original");
+        let mut manager = Manager::open(&root).unwrap();
+        let old = manager
+            .install_local(manager.preview_local(&source).unwrap(), target())
+            .unwrap();
+        manager
+            .confirm_manual(&old.id, &target(), old.generation, "1")
+            .unwrap();
+        artifact(&source, "2", "first v2");
+        let current = manager
+            .apply_update(manager.check_local(&old.id).unwrap(), UpdateKind::Upgrade)
+            .unwrap();
+        artifact(&source, "2", "repaired v2");
+        let plan = manager
+            .prepare_reinstall(&NoRemote, &old.id, &target(), current.generation)
+            .unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                manager
+                    .apply_update_with_progress(plan, UpdateKind::Redeploy, |stage| {
+                        if stage == stop_at {
+                            panic!("interruption");
+                        }
+                    })
+                    .unwrap();
+            }))
+            .is_err()
+        );
+        drop(manager);
+        let mut manager = Manager::open(&root).unwrap();
+        let recovered = manager.list().unwrap().remove(0);
+        assert!(
+            !recovered.recovery_required,
+            "{stop_at:?}: {}",
+            recovered.last_operation
+        );
+        let expected = if stop_at == UpdateStage::AwaitingConfirmation {
+            "repaired v2"
+        } else {
+            "first v2"
+        };
+        assert_eq!(
+            fs::read_to_string(recovered.install_dir.join("worker.js")).unwrap(),
+            expected
+        );
+        let plan = manager
+            .prepare_reinstall(&NoRemote, &old.id, &target(), recovered.generation)
+            .unwrap();
+        let repaired = manager.apply_update(plan, UpdateKind::Redeploy).unwrap();
+        let restored = manager
+            .restore_previous_files(&old.id, &target(), repaired.generation)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(restored.install_dir.join("worker.js")).unwrap(),
+            "original"
+        );
+    }
+}
+
+#[test]
+fn unavailable_exact_local_version_and_conflicts_never_change_failed_installation() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source");
+    artifact(&source, "1", "original");
+    let mut manager = Manager::open(&temp.path().join("managed")).unwrap();
+    let installed = manager
+        .install_local(manager.preview_local(&source).unwrap(), target())
+        .unwrap();
+    let failed = manager
+        .report_browser_failure(&installed.id, &target(), installed.generation)
+        .unwrap();
+    artifact(&source, "2", "wrong version");
+    assert!(
+        manager
+            .prepare_reinstall(&NoRemote, &failed.id, &target(), failed.generation)
+            .is_err()
+    );
+    assert_eq!(manager.list().unwrap(), vec![failed.clone()]);
+    fs::write(failed.install_dir.join("worker.js"), "user edit").unwrap();
+    assert!(
+        manager
+            .prepare_reinstall(&NoRemote, &failed.id, &target(), failed.generation)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(failed.install_dir.join("worker.js")).unwrap(),
+        "user edit"
+    );
+}

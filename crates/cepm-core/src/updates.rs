@@ -33,6 +33,14 @@ struct Journal {
     before: Installation,
     after: Installation,
     phase: Phase,
+    #[serde(default)]
+    repair: Option<Repair>,
+}
+#[derive(Serialize, Deserialize)]
+struct Repair {
+    before: Installation,
+    after: Installation,
+    committed: bool,
 }
 
 pub struct UpdatePlan {
@@ -113,9 +121,6 @@ impl Manager {
         }
         self.ensure_unmodified(&before)?;
         let transaction = self.transaction_path(&before.id);
-        if transaction.exists() {
-            return Err("上次更新仍等待核对。请先确认浏览器版本，或报告加载失败恢复旧文件".into());
-        }
         let mut after = before.clone();
         after.name = plan.preview.name;
         after.source = plan.preview.source;
@@ -128,12 +133,17 @@ impl Manager {
             .ok_or("安装代数溢出，请检查记录")?;
         after.historical_version = after.effective_version.take().or(after.historical_version);
         after.verification = Verification::Pending;
+        after.load_failed = false;
         after.updated_at = now();
         after.last_operation = "文件已更新，等待浏览器重载与核对".into();
+        if transaction.exists() {
+            return self.replace_pending_files(before, after, plan.preview.snapshot, progress);
+        }
         let mut journal = Journal {
             before,
             after: after.clone(),
             phase: Phase::Prepared,
+            repair: None,
         };
         fs::create_dir(&transaction).map_err(io_error)?;
         if let Err(error) = self.save_journal(&journal) {
@@ -172,6 +182,213 @@ impl Manager {
         }
     }
 
+    /// Fetches the saved artifact, never the latest moving version, for an explicit repair.
+    pub fn prepare_reinstall(
+        &self,
+        gh: &impl remote::Gh,
+        id: &str,
+        target: &Target,
+        generation: u64,
+    ) -> Result<UpdatePlan> {
+        let current = self.record(id)?;
+        if current.target != *target || current.generation != generation {
+            return Err("重装目标或部署已过期，请重新打开详情".into());
+        }
+        self.ensure_unmodified(&current)?;
+        let preview = match &current.origin {
+            None => self.preview_local(&current.source)?,
+            Some(RemoteOrigin::GitHubRelease {
+                repo,
+                tag,
+                asset_name,
+                root,
+                ..
+            }) => {
+                let catalog = self.list_releases(gh, &repo.slug())?;
+                let release = catalog
+                    .releases
+                    .iter()
+                    .find(|r| &r.tag_name == tag)
+                    .ok_or("原 Release 已不可获取，未改装其他版本")?;
+                let matching: Vec<_> = release
+                    .assets
+                    .iter()
+                    .filter(|a| &a.name == asset_name)
+                    .collect();
+                if matching.len() != 1 {
+                    return Err("原附件已不可唯一获取，未改装其他产物".into());
+                }
+                self.preview_release(
+                    gh,
+                    &repo.slug(),
+                    &remote::ReleaseSelection {
+                        tag: Some(tag.clone()),
+                        asset_id: Some(matching[0].id),
+                    },
+                )?
+                .select_root(Some(root))?
+            }
+            Some(
+                origin @ RemoteOrigin::GitHubDirectory {
+                    repo,
+                    commit,
+                    subdirectory,
+                    ..
+                },
+            ) => {
+                let preview = self.preview_repository(gh, &repo.slug(), commit, subdirectory)?;
+                if !matches!(preview.origin(), Some(RemoteOrigin::GitHubDirectory { commit: resolved, .. }) if resolved == commit)
+                {
+                    return Err("重新获取的提交与安装来源不一致".into());
+                }
+                preview.with_origin(origin.clone())
+            }
+        };
+        if preview.version() != current.installed_version {
+            return Err("原来源已不再提供当前文件版本，重装已停止；请显式选择其他版本".into());
+        }
+        let mut plan = self.prepare_update(id, preview)?;
+        plan.kind = UpdateKind::Redeploy;
+        Ok(plan)
+    }
+
+    fn replace_pending_files(
+        &mut self,
+        before: Installation,
+        after: Installation,
+        snapshot: TempDir,
+        mut progress: impl FnMut(UpdateStage),
+    ) -> Result<Installation> {
+        let transaction = self.transaction_path(&before.id);
+        let mut journal = self.read_journal(&transaction)?;
+        if journal.phase != Phase::Deployed
+            || journal.repair.is_some()
+            || journal.after.generation != before.generation
+            || journal.after.content_digest != before.content_digest
+        {
+            return Err("上次部署仍需恢复，请保留文件并重新打开应用".into());
+        }
+        if directory_digest(&transaction.join("old"))? != journal.before.content_digest {
+            return Err("原恢复备份损坏，已停止重装并保留当前文件".into());
+        }
+        journal.repair = Some(Repair {
+            before: before.clone(),
+            after: after.clone(),
+            committed: false,
+        });
+        self.save_journal(&journal)?;
+        progress(UpdateStage::Prepared);
+        let result: Result<()> = (|| {
+            fs::rename(&before.install_dir, transaction.join("repair-old")).map_err(io_error)?;
+            progress(UpdateStage::BackedUp);
+            fs::rename(snapshot.path(), &after.install_dir).map_err(io_error)?;
+            progress(UpdateStage::FilesDeployed);
+            self.save(&after)?;
+            progress(UpdateStage::RecordSaved);
+            journal.after = after.clone();
+            journal.repair.as_mut().unwrap().committed = true;
+            self.save_journal(&journal)?;
+            progress(UpdateStage::AwaitingConfirmation);
+            self.finish_repair(&mut journal)
+        })();
+        match result {
+            Ok(()) => Ok(after),
+            Err(error) => match self.finish_repair(&mut journal) {
+                Ok(()) => Err(format!(
+                    "文件替换未完成：{error}。原恢复备份保留，请检查当前状态"
+                )),
+                Err(recovery) => Err(format!("文件替换失败：{error}；恢复需要处理：{recovery}")),
+            },
+        }
+    }
+
+    /// Original recovery files stay in `old`; a repair's immediate rollback stays separate.
+    fn finish_repair(&self, journal: &mut Journal) -> Result<()> {
+        let Some(repair) = journal.repair.as_ref() else {
+            return Ok(());
+        };
+        let transaction = self.transaction_path(&journal.before.id);
+        let previous = transaction.join("repair-old");
+        if !repair.committed {
+            let installed = &repair.before.install_dir;
+            if installed.exists() {
+                let digest = directory_digest(installed)?;
+                if digest != repair.before.content_digest {
+                    if digest != repair.after.content_digest
+                        || directory_digest(&previous)? != repair.before.content_digest
+                    {
+                        return Err("修复目录或备份有无法识别的改动，已停止恢复".into());
+                    }
+                    fs::rename(installed, transaction.join("repair-failed")).map_err(io_error)?;
+                }
+            }
+            if !installed.exists() {
+                if directory_digest(&previous)? != repair.before.content_digest {
+                    return Err("修复前文件备份损坏，已停止恢复".into());
+                }
+                fs::rename(&previous, installed).map_err(io_error)?;
+            }
+            let mut restored = repair.before.clone();
+            restored.generation = repair
+                .after
+                .generation
+                .checked_add(1)
+                .ok_or("安装代数溢出")?;
+            restored.historical_version = restored
+                .effective_version
+                .take()
+                .or(restored.historical_version);
+            restored.verification = Verification::Pending;
+            restored.updated_at = now();
+            restored.last_operation = "修复中断，已恢复修复前文件；原始恢复备份保留".into();
+            self.save(&restored)?;
+            journal.after = restored;
+        }
+        for name in ["repair-old", "repair-failed"] {
+            let path = transaction.join(name);
+            if path.exists() {
+                fs::remove_dir_all(path).map_err(io_error)?;
+            }
+        }
+        journal.repair = None;
+        self.save_journal(journal)
+    }
+
+    pub fn report_browser_failure(
+        &mut self,
+        id: &str,
+        target: &Target,
+        generation: u64,
+    ) -> Result<Installation> {
+        let mut current = self.record(id)?;
+        if &current.target != target || current.generation != generation {
+            return Err("加载失败报告的目标或部署已过期，请重新打开详情".into());
+        }
+        self.ensure_unmodified(&current)?;
+        current.load_failed = true;
+        current.historical_version = current
+            .effective_version
+            .take()
+            .or(current.historical_version);
+        current.verification = Verification::Pending;
+        current.last_operation = "用户反馈加载失败，文件与可恢复备份保留".into();
+        self.save(&current)?;
+        Ok(current)
+    }
+
+    pub fn restore_previous_files(
+        &mut self,
+        id: &str,
+        target: &Target,
+        generation: u64,
+    ) -> Result<Installation> {
+        if self.record(id)?.target != *target {
+            return Err("恢复目标配置不一致".into());
+        }
+        self.report_load_failure(id, generation)
+    }
+
+    /// Legacy explicit restore entry. User feedback uses report_browser_failure.
     pub fn report_load_failure(&mut self, id: &str, generation: u64) -> Result<Installation> {
         let current = self.record(id)?;
         if current.generation != generation {
@@ -202,6 +419,9 @@ impl Manager {
             }
             let result = (|| {
                 let mut journal = self.read_journal(&transaction)?;
+                if journal.repair.is_some() {
+                    self.finish_repair(&mut journal)?;
+                }
                 if journal.phase == Phase::Deployed {
                     let current = self
                         .read_records()?
@@ -214,7 +434,7 @@ impl Manager {
                         return Err("更新记录与部署日志不一致，请保留数据目录并检查".into());
                     }
                     self.ensure_unmodified(&current)?;
-                    if current.verification == Verification::UserConfirmed {
+                    if current.verification != Verification::Pending {
                         fs::remove_dir_all(&transaction).map_err(io_error)?;
                     }
                 } else {
@@ -238,7 +458,7 @@ impl Manager {
                 return None;
             }
             match self.read_journal(&transaction) {
-                Ok(journal) if journal.phase == Phase::Deployed => None,
+                Ok(journal) if journal.phase == Phase::Deployed && journal.repair.is_none() => None,
                 Ok(_) => Some("存在未完成的文件替换或恢复".into()),
                 Err(error) => Some(error),
             }
@@ -284,6 +504,7 @@ impl Manager {
             .take()
             .or(restored.historical_version);
         restored.verification = Verification::Pending;
+        restored.load_failed = false;
         restored.updated_at = now();
         restored.last_operation = "已恢复旧文件，等待浏览器重载与核对；不撤销扩展数据迁移".into();
         self.save(&restored)?;
@@ -323,15 +544,32 @@ impl Manager {
             || journal.after.id != *id
             || journal.before.install_dir != self.root.join("installations").join(id)
             || journal.after.install_dir != journal.before.install_dir
-            || journal.after.generation
-                != journal
-                    .before
-                    .generation
-                    .checked_add(1)
-                    .ok_or("无效安装代数")?
+            || journal.after.generation <= journal.before.generation
+            || journal.after.target != journal.before.target
             || journal.before.content_digest.is_empty()
         {
             return Err("更新日志身份或路径无效，请保留数据目录并检查".into());
+        }
+        if let Some(repair) = &journal.repair
+            && (repair.before.id != *id
+                || repair.after.id != *id
+                || repair.before.install_dir != journal.before.install_dir
+                || repair.after.install_dir != journal.before.install_dir
+                || repair.before.target != journal.before.target
+                || repair.after.target != journal.before.target
+                || repair.after.generation
+                    != repair
+                        .before
+                        .generation
+                        .checked_add(1)
+                        .ok_or("无效修复代数")?
+                || repair.before.content_digest.is_empty()
+                || (repair.committed && repair.after != journal.after)
+                || (!repair.committed
+                    && (repair.before.generation != journal.after.generation
+                        || repair.before.content_digest != journal.after.content_digest)))
+        {
+            return Err("修复记录身份或路径无效，请保留数据目录并检查".into());
         }
         Ok(journal)
     }
