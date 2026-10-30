@@ -1,6 +1,6 @@
 # Manual browser removal and resumable cleanup (#15)
 
-The native detail action offers uninstall for installed, pending, failed and recovery states, including installations without an extension ID. Its compact confirmation identifies the extension and browser/Profile, warns about browser-owned extension data, and opens that target's native management page. A selectable manual-management address fallback remains available when launch cannot reach the page.
+The native detail action offers uninstall for installed, pending, failed and recovery states, including installations without an extension ID. Its compact confirmation identifies the extension and browser/Profile, warns about browser-owned extension data, and opens that target's native management page. A copyable manual-management address fallback remains available when launch cannot reach the page.
 
 Only the explicit “我已在此配置中移除这个扩展” acknowledgement permits cleanup. Closing the dialog, following the link or switching Profile does not submit it. The core entry point independently checks installation identity, target, deployment generation and explicit manual acknowledgement. The ordinary update/confirmation path rejects a removal in progress.
 

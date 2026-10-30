@@ -41,6 +41,11 @@ fn manual_removal_requires_explicit_confirmation_and_only_cleans_the_selected_in
             )
             .is_err()
     );
+    assert!(
+        manager
+            .retry_removal(&first.id, &first.target, first.generation)
+            .is_err()
+    );
     assert!(first.install_dir.exists());
     assert_eq!(manager.list().unwrap().len(), 2);
     assert!(
@@ -179,6 +184,17 @@ fn removal_interruption_never_resurrects_files_and_retries_without_browser_confi
                 .is_err()
         );
         assert!(manager.check_local(&remaining.id).is_err());
+        assert!(
+            manager
+                .retry_removal(&remaining.id, &target("another"), remaining.generation)
+                .is_err()
+        );
+        assert!(
+            manager
+                .retry_removal(&remaining.id, &remaining.target, remaining.generation + 1)
+                .is_err()
+        );
+        assert_eq!(manager.list().unwrap().remove(0), remaining);
         manager
             .retry_removal(&remaining.id, &remaining.target, remaining.generation)
             .unwrap();
