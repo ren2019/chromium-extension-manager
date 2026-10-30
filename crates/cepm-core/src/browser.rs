@@ -362,6 +362,7 @@ impl crate::Manager {
         record.extension_id = Some(evidence.extension_id);
         record.effective_version = Some(record.installed_version.clone());
         record.verification = crate::Verification::Automatic;
+        record.load_failed = false;
         record.last_operation =
             "浏览器已自动核对身份、版本与启用状态（不代表全部功能健康检查）".into();
         self.save(&record)?;

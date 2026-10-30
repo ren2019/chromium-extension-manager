@@ -138,6 +138,8 @@ fn field(label: &str, value: impl Into<SharedString>) -> Div {
 fn status(r: &Installation) -> &'static str {
     if r.recovery_required {
         "恢复需要处理"
+    } else if r.load_failed {
+        "更新失败"
     } else if r.verification == Verification::Pending {
         if r.generation > 1 {
             "待核对"
@@ -151,7 +153,7 @@ fn status(r: &Installation) -> &'static str {
     }
 }
 impl Desktop {
-    fn extension_icon(&self, r: &Installation) -> AnyElement {
+    pub(super) fn extension_icon(&self, r: &Installation) -> AnyElement {
         let artwork = self.artwork.get(&r.id).and_then(|m| m.image.clone());
         div()
             .size(px(42.))
@@ -590,11 +592,9 @@ impl Desktop {
             let action_id = id.clone();
             let pending = r.verification == Verification::Pending;
             let recovery = r.recovery_required;
-            let check = self.bulk_checks.iter().find(|c| c.id() == r.id);
-            let update = check
-                .and_then(|c| c.plan())
-                .filter(|p| p.kind() == UpdateKind::Upgrade)
-                .map(|p| p.version().to_owned());
+            let failed = r.load_failed;
+            let check = self.check_outcomes.get(&r.id);
+            let update = check.and_then(|c| c.as_ref().ok()).and_then(|v| v.clone());
             let mut info = v_flex()
                 .gap_1()
                 .flex_1()
@@ -623,7 +623,7 @@ impl Desktop {
                         .child(format!("有新版本 {version}")),
                 );
             } else if let Some(check) = check {
-                info = info.child(caption(if check.error().is_some() {
+                info = info.child(caption(if check.is_err() {
                     "检查失败"
                 } else {
                     "没有新版本"
@@ -662,8 +662,14 @@ impl Desktop {
                         .small()
                         .label(if recovery {
                             "处理异常"
+                        } else if failed {
+                            "处理失败"
                         } else if pending {
-                            "继续加载"
+                            if r.generation > 1 {
+                                "继续核对"
+                            } else {
+                                "继续加载"
+                            }
                         } else {
                             "查看更新"
                         })
@@ -671,7 +677,7 @@ impl Desktop {
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.selected = Some(action_id.clone());
                             v.open_panel(
-                                if pending && !recovery {
+                                if pending && !recovery && !failed {
                                     Panel::Guide
                                 } else {
                                     Panel::Detail
@@ -720,7 +726,24 @@ impl Desktop {
         );
         hero = hero.child(badge(status(&r), pending || r.recovery_required));
         let mut actions = h_flex().gap_2().flex_wrap();
-        if pending && !r.recovery_required {
+        if r.load_failed && !r.recovery_required {
+            actions = actions
+                .child(
+                    Button::new("reinstall")
+                        .primary()
+                        .icon(Lucide::RefreshCw)
+                        .label("重新安装")
+                        .disabled(disabled)
+                        .on_click(cx.listener(|v, _, _, cx| v.reinstall(cx))),
+                )
+                .child(
+                    Button::new("retry-confirm")
+                        .ghost()
+                        .label("重新核对")
+                        .disabled(disabled)
+                        .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Guide, w, cx))),
+                );
+        } else if pending && !r.recovery_required {
             actions = actions.child(
                 Button::new("detail-guide")
                     .primary()
@@ -808,19 +831,11 @@ impl Desktop {
                         .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Restore, w, cx))),
                 )
             });
-        let check = self.bulk_checks.iter().find(|c| c.id() == r.id);
-        let check_text = if let Some(c) = check {
-            if let Some(p) = c.plan() {
-                if p.kind() == UpdateKind::Upgrade {
-                    format!("有新版本 {}", p.version())
-                } else {
-                    "没有新版本".into()
-                }
-            } else {
-                "检查失败".into()
-            }
-        } else {
-            "尚未检查".into()
+        let check_text = match self.check_outcomes.get(&r.id) {
+            Some(Ok(Some(version))) => format!("有新版本 {version}"),
+            Some(Ok(None)) => "没有新版本".into(),
+            Some(Err(_)) => "检查失败".into(),
+            None => "尚未检查".into(),
         };
         let checked_at = self
             .operations

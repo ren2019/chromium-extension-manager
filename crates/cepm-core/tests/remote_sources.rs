@@ -573,3 +573,39 @@ fn changed_selectors_or_cli_failures_pause_checks_without_changing_existing_inst
     fs::write(local.path().join("manifest.json"), manifest).unwrap();
     assert!(manager.preview_local(local.path()).is_ok());
 }
+
+#[test]
+fn reinstall_uses_saved_release_asset_even_when_newest_release_differs() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut manager = Manager::open(temp.path()).unwrap();
+    let gh = FixtureGh {
+        pages: json!([[{"tag_name":"old-product","assets":[{"id":1,"name":"extension-v1.zip","state":"uploaded"}]},{"tag_name":"new-product","assets":[{"id":2,"name":"extension-v2.zip","state":"uploaded"}]}]]),
+        latest: "new-product".into(),
+        archives: [(1, archive("1")), (2, archive("2"))].into(),
+    };
+    let preview = manager
+        .preview_release(
+            &gh,
+            "private/extension",
+            &ReleaseSelection {
+                tag: Some("old-product".into()),
+                asset_id: Some(1),
+            },
+        )
+        .unwrap()
+        .select_root(None)
+        .unwrap();
+    let target = Target {
+        browser: Browser::Edge,
+        profile: "test".into(),
+    };
+    let old = manager.install_local(preview, target.clone()).unwrap();
+    let plan = manager
+        .prepare_reinstall(&gh, &old.id, &target, old.generation)
+        .unwrap();
+    let repaired = manager
+        .apply_update(plan, cepm_core::UpdateKind::Redeploy)
+        .unwrap();
+    assert_eq!(repaired.installed_version, "1");
+    assert_eq!(repaired.origin, old.origin);
+}

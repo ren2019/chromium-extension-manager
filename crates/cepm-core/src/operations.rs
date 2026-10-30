@@ -150,7 +150,12 @@ impl Manager {
     }
 }
 fn diagnosis(error: &str) -> (&'static str, &'static str) {
-    if error.contains("找不到 gh") {
+    if error.contains("用户反馈浏览器加载失败") {
+        (
+            "用户反馈更新失败",
+            "重新安装当前版本、选择其他版本或显式恢复旧文件",
+        )
+    } else if error.contains("找不到 gh") {
         (
             "GitHub CLI 未安装",
             "安装 gh 并完成 gh auth login；本地目录仍可用",
