@@ -74,3 +74,14 @@
 2026-10-30 收到用户行动前授权后，已完成独立配置真实持久安装/自动卸载/重启缺席、其他配置保留、共享多 Profile 拒绝，以及日常 Edge 的 OpenCLI 卸载、原官方来源重装、重启持久性和实际连接。临时调试已关闭；Chrome 的受管记录与全部文件哈希未变。详见 [Edge 验收记录](spec10-edge-acceptance.md)。
 
 应用默认启用已验收的窄范围卸载适配器；只允许已验证 macOS Edge 156.0.4314.50、单普通 Profile 根目录和精确受管安装，其他情况保留手动流程。首次持久加载仍使用浏览器原生入口。
+
+## 最终安装包复验（ad8b0c7）
+
+正常打包脚本生成最终 Apple Silicon debug 包，并替换、重新打开 `/Applications/CEPM.app`。安装后二进制与生成包二进制 SHA-256 一致：`f99cb302d11d5d99c6405e84f8b74b89bf4f5abbcfc9f7ff48b0f9ce38923701`。这取代第一轮 7548e6f 的安装包。
+
+真实 Edge 安装详情显示 1.0.26、浏览器自动核对及两份受管安装；原生历史显示 OpenCLI 卸载清理已完成，并保留名称和自动回读说明。核对已完成的历史不再提示尚需重载；旧记录通过读取展示修正，审计文件未重写。
+
+- [最终 Edge 详情](spec10-images/26-final-edge-detail.png)
+- [最终 Edge 卸载与确认历史](spec10-images/27-final-edge-history.png)
+
+最终代码的 86 项 workspace 测试、Clippy（warnings denied）、格式及打包通过。另有独立核心默认拒绝测试与应用关闭默认功能构建检查通过。最终浏览器实测及限制见 [Edge 验收记录](spec10-edge-acceptance.md)。
