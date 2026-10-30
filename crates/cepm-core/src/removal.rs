@@ -18,6 +18,7 @@ pub enum RemovalPhase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum RemovalMethod {
     UserConfirmed,
+    Automatic,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemovalState {

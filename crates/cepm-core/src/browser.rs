@@ -44,8 +44,21 @@ pub struct BrowserObservation {
     observed_at: std::time::Instant,
 }
 
+/// Explicit confirmation shown with the exact installation and browser target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AutomaticRemovalConfirmation {
+    NotConfirmed,
+    Confirmed,
+}
+
+/// Off by default until controlled UI-persistent removal acceptance is recorded.
+pub fn automatic_uninstall_enabled() -> bool {
+    cfg!(all(feature = "edge-uninstall", target_os = "macos"))
+}
+
 pub struct EdgeSession {
     profile: BrowserProfile,
+    edge_version: String,
     socket: tungstenite::WebSocket<std::net::TcpStream>,
     cancel: BrowserCancellation,
     deadline: std::time::Instant,
@@ -116,6 +129,7 @@ impl EdgeSession {
             .map_err(|_| "无法建立浏览器连接")?;
         let mut session = Self {
             profile: profile.clone(),
+            edge_version: String::new(),
             socket,
             cancel,
             deadline,
@@ -132,6 +146,18 @@ impl EdgeSession {
         {
             return Err("连接的浏览器不是 Edge，已停止自动核对".into());
         }
+        session.edge_version = if product.starts_with("Edg/") {
+            product.trim_start_matches("Edg/").to_string()
+        } else if product.starts_with("Microsoft Edge/") {
+            product.trim_start_matches("Microsoft Edge/").to_string()
+        } else {
+            agent
+                .split("Edg/")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .unwrap_or("")
+                .to_string()
+        };
         let target = session.call(
             "Target.createTarget",
             serde_json::json!({"url":"edge://version"}),
@@ -165,7 +191,7 @@ impl EdgeSession {
     pub fn capabilities(&self) -> BrowserCapabilities {
         BrowserCapabilities {
             read_metadata: true,
-            uninstall: false,
+            uninstall: automatic_uninstall_enabled() && self.edge_version == "156.0.4314.50",
             persistent_load: false,
             reload: false,
         }
@@ -268,6 +294,59 @@ impl EdgeSession {
         self.check()?;
         Ok(())
     }
+    fn remove_and_verify_absence(&mut self, record: &crate::Installation) -> Result<()> {
+        if !self.capabilities().uninstall {
+            return Err("此 Edge 版本暂不支持自动卸载，请使用手动移除".into());
+        }
+        if record.target != self.profile.target() {
+            return Err("卸载浏览器目标不一致".into());
+        }
+        let id = record
+            .extension_id
+            .as_deref()
+            .filter(|id| id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b)))
+            .ok_or("尚未识别扩展身份，请先识别或手动移除")?;
+        if record.install_dir.canonicalize().ok().as_ref() != Some(&record.install_dir) {
+            return Err("固定安装目录位置变化，已停止卸载".into());
+        }
+        self.validate_binding()?;
+        let entries = self.call("Extensions.getExtensions", serde_json::json!({}), None)?;
+        let entries = complete_extension_list(&entries)?;
+        let by_id: Vec<_> = entries
+            .iter()
+            .filter(|e| e["id"].as_str() == Some(id))
+            .collect();
+        let by_path: Vec<_> = entries
+            .iter()
+            .filter(|e| {
+                e["path"].as_str().is_some_and(|path| {
+                    std::path::Path::new(path).canonicalize().ok().as_ref()
+                        == Some(&record.install_dir)
+                })
+            })
+            .collect();
+        if by_id.len() != 1 || by_path.len() != 1 || by_path[0]["id"].as_str() != Some(id) {
+            return Err("未找到唯一匹配的受管扩展，未执行卸载；请手动检查目标配置".into());
+        }
+        self.validate_binding()?;
+        self.call("Extensions.uninstall", serde_json::json!({"id":id}), None)?;
+        // A successful request is not evidence of disappearance. Read failure,
+        // a reused ID or an unchanged path all preserve local state for retry.
+        self.validate_binding()?;
+        let response = self.call("Extensions.getExtensions", serde_json::json!({}), None)?;
+        let remaining = complete_extension_list(&response)?;
+        if remaining.iter().any(|entry| {
+            entry["id"].as_str() == Some(id)
+                || entry["path"].as_str().is_some_and(|path| {
+                    std::path::Path::new(path).canonicalize().ok().as_ref()
+                        == Some(&record.install_dir)
+                })
+        }) {
+            return Err("浏览器仍显示这个扩展，未清理文件；请重试或手动移除".into());
+        }
+        self.validate_binding()?;
+        Ok(())
+    }
     /// Read and bind browser evidence to this precise deployment. This does not
     /// write an installation record; callers commit only if their task is current.
     pub fn verify(&mut self, record: &crate::Installation) -> Result<BrowserObservation> {
@@ -330,6 +409,47 @@ impl Drop for EdgeSession {
     }
 }
 impl crate::Manager {
+    /// The browser operation and its result verification are inseparable from
+    /// cleanup authorization; callers cannot fabricate a successful removal.
+    pub fn uninstall_edge(
+        &mut self,
+        id: &str,
+        target: &crate::Target,
+        generation: u64,
+        session: EdgeSession,
+        confirmation: AutomaticRemovalConfirmation,
+    ) -> Result<()> {
+        self.uninstall_edge_with_progress(id, target, generation, session, confirmation, |_| {})
+    }
+    pub fn uninstall_edge_with_progress(
+        &mut self,
+        id: &str,
+        target: &crate::Target,
+        generation: u64,
+        mut session: EdgeSession,
+        confirmation: AutomaticRemovalConfirmation,
+        progress: impl FnMut(crate::RemovalPhase),
+    ) -> Result<()> {
+        if confirmation != AutomaticRemovalConfirmation::Confirmed {
+            return Err("尚未确认卸载，未操作浏览器或文件".into());
+        }
+        self.validate_storage_directories()?;
+        let record = self.record(id)?;
+        if record.target != *target || record.generation != generation {
+            return Err("卸载目标或部署已变化，请重新打开详情".into());
+        }
+        session.remove_and_verify_absence(&record)?;
+        session.check()?;
+        self.begin_removal(
+            id,
+            target,
+            generation,
+            crate::removal::RemovalMethod::Automatic,
+        )?;
+        drop(session);
+        self.retry_removal_with_progress(id, target, generation, progress)
+    }
+
     /// Commits only evidence minted by an authorized live browser task. A stale
     /// UI target, deployment, cancellation or modified directory cannot confirm.
     pub fn confirm_browser(
@@ -373,6 +493,25 @@ impl crate::Manager {
         Ok(record)
     }
 }
+fn complete_extension_list(response: &serde_json::Value) -> Result<&Vec<serde_json::Value>> {
+    let entries = response["extensions"]
+        .as_array()
+        .ok_or("浏览器结果不完整，未清理文件，请手动核对")?;
+    if entries.iter().any(|entry| {
+        !entry["id"]
+            .as_str()
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| (b'a'..=b'p').contains(&b)))
+            || !entry["path"].as_str().is_some_and(|path| {
+                std::path::Path::new(path).is_absolute() && !path.chars().any(char::is_control)
+            })
+            || !entry["version"].as_str().is_some_and(crate::valid_version)
+            || entry["enabled"].as_bool().is_none()
+    }) {
+        return Err("浏览器结果不完整，未清理文件，请手动核对".into());
+    }
+    Ok(entries)
+}
+
 fn validate_single_profile(profile: &BrowserProfile) -> Result<()> {
     if profile.browser != Browser::Edge {
         return Err("当前只支持 Edge 自动核对，请使用手动确认".into());

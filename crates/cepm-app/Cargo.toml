@@ -11,3 +11,7 @@ rfd = "0.15"
 directories = "6"
 
 chrono = "0.4"
+
+[features]
+# Forward the narrowly gated adapter; intentionally off until runtime acceptance.
+edge-uninstall = ["cepm-core/edge-uninstall"]

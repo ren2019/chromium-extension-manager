@@ -143,7 +143,15 @@ impl Manager {
             at: crate::updates::now(),
             stage: OperationStage::Uninstall,
             status: OperationStatus::Succeeded,
-            reason: "用户确认浏览器已移除；受管文件已清理".into(),
+            reason: match state.method {
+                crate::removal::RemovalMethod::UserConfirmed => {
+                    "用户确认浏览器已移除；受管文件已清理"
+                }
+                crate::removal::RemovalMethod::Automatic => {
+                    "浏览器自动卸载并回读确认移除；受管文件已清理"
+                }
+            }
+            .into(),
             next_step: "管理记录移除失败时可重试清理，无需重复浏览器操作".into(),
             operation_id: Some(state.operation_id.clone()),
         });
