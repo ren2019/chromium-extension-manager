@@ -288,12 +288,7 @@ impl Manager {
             "用户已确认浏览器版本（非自动验证）"
         }
         .into();
-        self.save(&record)?;
-        let backup = self.transaction_path(&record.id);
-        if backup.exists() {
-            fs::remove_dir_all(backup).map_err(io_error)?;
-        }
-        Ok(record)
+        self.commit_confirmation(record)
     }
 
     pub fn confirm(
@@ -326,6 +321,11 @@ impl Manager {
         record.verification = Verification::UserConfirmed;
         record.load_failed = false;
         record.last_operation = "用户已确认浏览器版本（非自动验证）".into();
+        self.commit_confirmation(record)
+    }
+
+    // Evidence validation stays in each use case; only commit/retirement is shared.
+    fn commit_confirmation(&self, record: Installation) -> Result<Installation> {
         self.save(&record)?;
         let backup = self.transaction_path(&record.id);
         if backup.exists() {

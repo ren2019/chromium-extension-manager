@@ -485,12 +485,7 @@ impl crate::Manager {
         record.load_failed = false;
         record.last_operation =
             "浏览器已自动核对身份、版本与启用状态（不代表全部功能健康检查）".into();
-        self.save(&record)?;
-        let backup = self.transaction_path(&record.id);
-        if backup.exists() {
-            fs::remove_dir_all(backup).map_err(crate::io_error)?;
-        }
-        Ok(record)
+        self.commit_confirmation(record)
     }
 }
 fn complete_extension_list(response: &serde_json::Value) -> Result<&Vec<serde_json::Value>> {

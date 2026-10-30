@@ -147,7 +147,7 @@ impl Desktop {
         };
         let retry = record.removal.is_some();
         let manual = self.uninstall_manual || retry;
-        let disabled = self.busy || !self.target_ready();
+        let disabled = self.busy || (!retry && !self.target_ready());
         let connecting = self.browser_task.is_some();
         let mut content=v_flex().gap_3()
             .child(heading(record.name.clone()))
@@ -286,6 +286,7 @@ impl Desktop {
                     .flex_wrap()
                     .child(
                         Button::new("browser-connect")
+                            .ghost()
                             .label("连接 Edge 并核对")
                             .disabled(self.busy)
                             .on_click(cx.listener(|v, _, _, cx| v.connect_browser(cx))),
