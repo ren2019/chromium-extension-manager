@@ -29,9 +29,9 @@ pub(super) fn apply_theme(cx: &mut App) {
         theme.colors.border = rgb(BORDER).into();
         theme.colors.ring = rgb(0x3b82f6).into();
         theme.colors.secondary_active = rgb(0xe1e8fb).into();
-        theme.colors.primary = rgb(GREEN).into();
+        theme.colors.primary = rgb(ACCENT).into();
         theme.colors.primary_foreground = rgb(0xffffff).into();
-        theme.colors.button_primary = rgb(GREEN).into();
+        theme.colors.button_primary = rgb(ACCENT).into();
         theme.colors.button_primary_foreground = rgb(0xffffff).into();
         theme.colors.button_primary_hover = rgb(0x1d4ed8).into();
         theme.colors.button_primary_active = rgb(0x1e40af).into();
@@ -66,6 +66,23 @@ pub(super) fn load_artwork(
                     },
                 )
             })
+        })
+        .collect()
+}
+pub(super) fn load_related_ids(
+    manager: Option<&Arc<Mutex<Manager>>>,
+    records: &[Installation],
+) -> HashMap<String, Vec<String>> {
+    let Some(manager) = manager.and_then(|m| m.lock().ok()) else {
+        return HashMap::new();
+    };
+    records
+        .iter()
+        .filter_map(|r| {
+            manager
+                .related_installations(&r.id)
+                .ok()
+                .map(|related| (r.id.clone(), related.into_iter().map(|r| r.id).collect()))
         })
         .collect()
 }
@@ -254,7 +271,7 @@ impl Desktop {
             ),
         ] {
             let label = h_flex()
-                .text_color(rgb(if self.page == page { GREEN } else { 0x1a1a1d }))
+                .text_color(rgb(if self.page == page { ACCENT } else { 0x1a1a1d }))
                 .w_full()
                 .gap_2()
                 .child(icon(glyph))
@@ -414,7 +431,7 @@ impl Desktop {
             .rounded_lg()
             .text_sm()
             .bg(rgb(if self.error { 0xfff0ee } else { 0xeff3ff }))
-            .text_color(rgb(if self.error { 0xb42318 } else { GREEN }))
+            .text_color(rgb(if self.error { 0xb42318 } else { ACCENT }))
             .child(self.status.clone())
     }
     pub(super) fn library(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -468,7 +485,7 @@ impl Desktop {
                         ),
                 ),
         );
-        if !self.status.is_empty() {
+        if !self.status.is_empty() && !self.has_task_dialog() {
             body = body.child(self.notice());
         }
         if !self.target_ready() {
@@ -498,8 +515,14 @@ impl Desktop {
                     .installation_id
                     .as_ref()
                     .and_then(|id| records.iter().find(|r| &r.id == id))
-                    .map(|r| r.name.as_str())
-                    .unwrap_or("来源操作");
+                    .map(|r| r.name.clone())
+                    .or_else(|| op.installation_name.clone())
+                    .unwrap_or_else(|| {
+                        op.installation_id
+                            .as_ref()
+                            .map(|id| format!("安装 {id}"))
+                            .unwrap_or_else(|| "来源操作".into())
+                    });
                 history = history.child(
                     v_flex()
                         .gap_1()
@@ -634,7 +657,7 @@ impl Desktop {
                 info = info.child(
                     div()
                         .text_sm()
-                        .text_color(rgb(GREEN))
+                        .text_color(rgb(ACCENT))
                         .child(format!("有新版本 {version}")),
                 );
             } else if let Some(check) = check {
@@ -913,12 +936,20 @@ impl Desktop {
             .child(field("安装时间", time(r.installed_at, false)))
             .child(field("最后更新时间", updated(&r, false)))
             .child(field("最近检查", checked_at));
-        let related = self
-            .manager
-            .as_ref()
-            .and_then(|m| m.lock().ok())
-            .and_then(|m| m.related_installations(&r.id).ok())
-            .unwrap_or_else(|| vec![r.clone()]);
+        // The membership snapshot is refreshed with records after operations.
+        // Rendering never waits for the browser task's Manager lock.
+        let related: Vec<_> = self
+            .records
+            .iter()
+            .filter(|other| {
+                other.id == r.id
+                    || self
+                        .related_ids
+                        .get(&r.id)
+                        .is_some_and(|ids| ids.contains(&other.id))
+            })
+            .cloned()
+            .collect();
         let mut compare = card().child(
             Button::new("cross-profiles")
                 .accessibility_label(format!("各配置安装情况，{} 份受管安装", related.len()))
@@ -1093,7 +1124,7 @@ impl Desktop {
             )
             .child(hero)
             .child(card().p_3().child(actions));
-        if !self.status.is_empty() {
+        if !self.status.is_empty() && !self.has_task_dialog() {
             body = body.child(self.notice());
         }
         body.child(

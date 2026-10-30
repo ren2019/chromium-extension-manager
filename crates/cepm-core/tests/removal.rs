@@ -289,3 +289,107 @@ fn history_is_not_duplicated_if_record_checkpoint_fails_after_cleanup() {
     assert!(manager.list().unwrap().is_empty());
     assert_eq!(manager.operation_history(&record.target).unwrap().len(), 1);
 }
+
+#[test]
+#[cfg(unix)]
+fn final_record_removal_failure_never_reports_completed_cleanup_after_reopen() {
+    use cepm_core::{RemovalPhase, operations::OperationStatus};
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("managed");
+    artifact(&source, "1");
+    let mut manager = Manager::open(&root).unwrap();
+    let record = manager
+        .install_local(manager.preview_local(&source).unwrap(), target("one"))
+        .unwrap();
+    let records = root.join("records");
+    let result = manager.confirm_manual_removal_with_progress(
+        &record.id,
+        &record.target,
+        record.generation,
+        ManualRemovalConfirmation::Removed,
+        |phase| {
+            if phase == RemovalPhase::HistoryRecorded {
+                fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+            }
+        },
+    );
+    fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(result.is_err());
+    // Upgrade from the earlier event format that prematurely persisted Succeeded.
+    let history_path = root.join("operations.json");
+    let mut old: serde_json::Value =
+        serde_json::from_slice(&fs::read(&history_path).unwrap()).unwrap();
+    old[0]["status"] = serde_json::json!("Succeeded");
+    fs::write(history_path, serde_json::to_vec(&old).unwrap()).unwrap();
+    drop(manager);
+    let mut manager = Manager::open(&root).unwrap();
+    assert_ne!(
+        manager.operation_history(&record.target).unwrap()[0].status,
+        OperationStatus::Succeeded
+    );
+    manager
+        .retry_removal(&record.id, &record.target, record.generation)
+        .unwrap();
+    drop(manager);
+    let manager = Manager::open(&root).unwrap();
+    assert_eq!(
+        manager.operation_history(&record.target).unwrap()[0].status,
+        OperationStatus::Succeeded
+    );
+    // A conflicting replacement is not absence, even if the record is gone.
+    fs::write(&record.install_dir, "replacement conflict").unwrap();
+    assert_ne!(
+        manager.operation_history(&record.target).unwrap()[0].status,
+        OperationStatus::Succeeded
+    );
+}
+
+#[test]
+fn removal_preserves_extension_identity_in_new_and_legacy_history() {
+    use cepm_core::operations::OperationStage;
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    let root = temp.path().join("managed");
+    artifact(&source, "1");
+    let mut manager = Manager::open(&root).unwrap();
+    let record = manager
+        .install_local(manager.preview_local(&source).unwrap(), target("one"))
+        .unwrap();
+    manager
+        .record_operation(
+            &record.target,
+            Some(&record.id),
+            OperationStage::Deploy,
+            Ok(()),
+        )
+        .unwrap();
+    // An older on-disk history has no name snapshot.
+    let history_path = root.join("operations.json");
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(&history_path).unwrap()).unwrap();
+    legacy[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("installation_name");
+    fs::write(&history_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    manager
+        .confirm_manual_removal(
+            &record.id,
+            &record.target,
+            record.generation,
+            ManualRemovalConfirmation::Removed,
+        )
+        .unwrap();
+    drop(manager);
+    let manager = Manager::open(&root).unwrap();
+    let history = manager.operation_history(&record.target).unwrap();
+    assert_eq!(history.len(), 2);
+    for entry in history {
+        assert_eq!(
+            serde_json::to_value(entry).unwrap()["installation_name"],
+            "Shared fixture"
+        );
+    }
+}

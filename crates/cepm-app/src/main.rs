@@ -24,7 +24,7 @@ use std::{
 };
 use visual::*;
 
-const GREEN: u32 = 0x2563eb;
+const ACCENT: u32 = 0x2563eb;
 const MUTED: u32 = 0x6b6b73;
 const BORDER: u32 = 0xd9d9e0;
 #[derive(Clone, Copy, PartialEq)]
@@ -86,6 +86,7 @@ struct Desktop {
     remote_directory: Entity<InputState>,
     switcher: bool,
     cross_profiles: bool,
+    related_ids: std::collections::HashMap<String, Vec<String>>,
     artwork: std::collections::HashMap<String, Artwork>,
     show_technical: bool,
     show_versions: bool,
@@ -180,7 +181,7 @@ fn badge(text: impl Into<SharedString>, pending: bool) -> Div {
         .rounded_md()
         .text_xs()
         .bg(rgb(if pending { 0xfcf3e3 } else { 0xeff3ff }))
-        .text_color(rgb(if pending { 0x94631c } else { GREEN }))
+        .text_color(rgb(if pending { 0x94631c } else { ACCENT }))
         .child(text.into())
 }
 fn input(window: &mut Window, cx: &mut Context<Desktop>, placeholder: &str) -> Entity<InputState> {
@@ -271,6 +272,7 @@ impl Desktop {
             })
             .unwrap_or_default();
         let artwork = load_artwork(manager.as_ref(), &records);
+        let related_ids = load_related_ids(manager.as_ref(), &records);
         let error = !status.is_empty();
         Self {
             keyboard: keyboard::Keyboard::new(window, cx),
@@ -306,6 +308,7 @@ impl Desktop {
             switcher: false,
             cross_profiles: false,
             artwork,
+            related_ids,
             show_technical: false,
             show_versions: false,
             checked: false,
@@ -386,6 +389,29 @@ impl Desktop {
         self.status.clear();
         self.error = false;
         cx.notify();
+    }
+    fn has_task_dialog(&self) -> bool {
+        !matches!(self.panel, Panel::None | Panel::Detail)
+    }
+    fn shows_detail(&self) -> bool {
+        self.selected.is_some()
+            && (matches!(
+                self.panel,
+                Panel::Detail | Panel::Guide | Panel::Update | Panel::Restore | Panel::Uninstall
+            ) || (self.panel == Panel::Add && self.source_update_id.is_some()))
+    }
+    fn dismiss_task(&mut self) {
+        let return_to_detail = self.shows_detail();
+        self.cancel_browser_task();
+        self.panel = if return_to_detail {
+            Panel::Detail
+        } else {
+            Panel::None
+        };
+        self.guide_record = None;
+        self.uninstall_record = None;
+        self.preview = None;
+        self.checked = false;
     }
     fn clear_target_work(&mut self) {
         self.cancel_browser_task();
@@ -604,6 +630,8 @@ impl Desktop {
                     }
                 }
                 v.artwork = load_artwork(v.manager.as_ref(), &v.records);
+                v.related_ids
+                    .extend(load_related_ids(v.manager.as_ref(), &v.records));
                 cx.notify();
             })
             .ok();
@@ -920,7 +948,11 @@ impl Desktop {
                     "发现可用版本".into()
                 };
                 v.panel = if plan.kind() == UpdateKind::Unchanged {
-                    Panel::None
+                    if v.shows_detail() {
+                        Panel::Detail
+                    } else {
+                        Panel::None
+                    }
                 } else {
                     Panel::Update
                 };
@@ -932,11 +964,6 @@ impl Desktop {
         let Some(plan) = self.update_plan.take() else {
             return;
         };
-        if matches!(plan.kind(), UpdateKind::Downgrade | UpdateKind::Redeploy) && !self.checked {
-            self.update_plan = Some(plan);
-            self.message(Err("请明确确认降级或同版本重新部署".into()), "", cx);
-            return;
-        }
         let Some(profile) = self.target() else { return };
         self.work(
             "正在准备 → 备份旧文件 → 部署文件…",
@@ -969,9 +996,6 @@ impl Desktop {
         );
     }
     fn restore(&mut self, cx: &mut Context<Self>) {
-        if !self.checked {
-            return;
-        }
         let Some(record) = self.current_record() else {
             return;
         };
@@ -1149,7 +1173,8 @@ impl Desktop {
                     .child(caption("包含 manifest.json 和所需文件，不运行构建脚本。"))
                     .child(
                         Button::new("choose-source")
-                            .label("▱ 选择本地扩展文件夹")
+                            .icon(gpui_kit::assets::IconName::Folder)
+                            .label("选择本地扩展文件夹")
                             .disabled(disabled)
                             .on_click(cx.listener(|v, _, _, cx| v.choose_source(cx))),
                     );
@@ -1694,45 +1719,42 @@ impl Desktop {
                         )))
                         .child(caption(format!("{kind} · {}", plan.source().display())))
                         .child(caption("更新后需要在浏览器重新加载。"));
-                    if matches!(plan.kind(), UpdateKind::Downgrade | UpdateKind::Redeploy) {
-                        content = content.child(
-                            Checkbox::new("version-choice")
-                                .label(format!("我明确选择{kind}"))
-                                .checked(self.checked)
-                                .disabled(disabled)
-                                .on_click(cx.listener(|v, value, _, cx| {
-                                    v.checked = *value;
-                                    cx.notify();
-                                })),
-                        );
-                    }
                     content = content.child(
-                        Button::new("apply-update")
-                            .primary()
-                            .label(if plan.kind() == UpdateKind::Upgrade {
-                                "更新".to_owned()
-                            } else {
-                                format!("确认{kind}")
-                            })
-                            .disabled(
-                                disabled
-                                    || plan.kind() == UpdateKind::Unchanged
-                                    || (matches!(
-                                        plan.kind(),
-                                        UpdateKind::Downgrade | UpdateKind::Redeploy
-                                    ) && !self.checked),
+                        h_flex()
+                            .gap_2()
+                            .justify_between()
+                            .child(
+                                Button::new("cancel-update")
+                                    .ghost()
+                                    .label("取消")
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(|v, _, _, cx| {
+                                        v.dismiss_task();
+                                        cx.notify();
+                                    })),
                             )
-                            .on_click(cx.listener(|v, _, _, cx| v.apply_update(cx))),
+                            .child(
+                                Button::new("apply-update")
+                                    .primary()
+                                    .label(if plan.kind() == UpdateKind::Upgrade {
+                                        "更新".to_owned()
+                                    } else {
+                                        format!("确认{kind}")
+                                    })
+                                    .disabled(disabled || plan.kind() == UpdateKind::Unchanged)
+                                    .on_click(cx.listener(|v, _, _, cx| v.apply_update(cx))),
+                            ),
                     );
                 }
             }
             Panel::Restore => {
                 content = content.child(heading("浏览器无法加载新版本？"))
                     .child(caption("恢复本次更新前保留的文件，然后重新加载与核对。浏览器数据由浏览器保管；恢复文件不会自动恢复浏览器数据。"))
-                    .child(Checkbox::new("restore-check").label("新文件加载失败，我要恢复上一份文件").checked(self.checked).disabled(disabled)
-                        .on_click(cx.listener(|v, value, _, cx| { v.checked = *value; cx.notify(); })))
-                    .child(Button::new("restore-files").primary().label("恢复上一份文件").disabled(disabled || !self.checked)
-                        .on_click(cx.listener(|v, _, _, cx| v.restore(cx))));
+                    .child(h_flex().gap_2().justify_between()
+                        .child(Button::new("cancel-restore").ghost().label("取消").disabled(disabled)
+                            .on_click(cx.listener(|v, _, _, cx| {v.dismiss_task(); cx.notify();})))
+                        .child(Button::new("restore-files").primary().label("确认恢复上一份文件").disabled(disabled)
+                            .on_click(cx.listener(|v, _, _, cx| v.restore(cx)))));
             }
             Panel::Bulk => {
                 content = content.child(heading(self.target_label())).child(caption(
@@ -1851,8 +1873,8 @@ impl Render for Desktop {
                 }
                 if event.keystroke.key == "escape" && !v.busy {
                     v.switcher = false;
-                    if v.panel != Panel::Detail {
-                        v.panel = Panel::None;
+                    if v.has_task_dialog() {
+                        v.dismiss_task();
                     }
                     cx.notify();
                 }
@@ -1881,7 +1903,7 @@ impl Render for Desktop {
                     .min_h_0()
                     .w_full()
                     .child(self.sidebar(cx))
-                    .child(if panel == Panel::Detail {
+                    .child(if self.shows_detail() {
                         self.detail_page(cx)
                     } else {
                         self.library(cx)
@@ -1929,9 +1951,7 @@ impl Render for Desktop {
                                                 .accessibility_label("关闭")
                                                 .disabled(self.busy && self.browser_task.is_none())
                                                 .on_click(cx.listener(|v, _, _, cx| {
-                                                    v.cancel_browser_task();
-                                                    v.panel = Panel::None;
-                                                    v.preview = None;
+                                                    v.dismiss_task();
                                                     cx.notify();
                                                 })),
                                         ),
@@ -1945,38 +1965,29 @@ impl Render for Desktop {
                                         .p_5()
                                         .child(self.panel_content(cx)),
                                 )
-                                .when(!self.status.is_empty(), |v| {
-                                    v.child(
-                                        div()
-                                            .px_5()
-                                            .py_3()
-                                            .text_sm()
-                                            .bg(rgb(if self.error { 0xfaeeec } else { 0xeff3ff }))
-                                            .child(self.status.clone()),
-                                    )
-                                })
-                                .when(!matches!(panel, Panel::Guide | Panel::Uninstall), |d| {
-                                    d.child(
-                                        h_flex()
-                                            .justify_between()
-                                            .p_4()
-                                            .border_t_1()
-                                            .border_color(rgb(BORDER))
-                                            .child(div())
-                                            .child(
-                                                Button::new("later")
-                                                    .label("关闭")
-                                                    .disabled(
-                                                        self.busy && self.browser_task.is_none(),
-                                                    )
-                                                    .on_click(cx.listener(|v, _, _, cx| {
-                                                        v.cancel_browser_task();
-                                                        v.panel = Panel::None;
-                                                        cx.notify();
-                                                    })),
-                                            ),
-                                    )
-                                }),
+                                .when(
+                                    !self.status.is_empty()
+                                        && !(panel == Panel::Uninstall
+                                            && self.uninstall_record.as_ref().is_some_and(|r| {
+                                                r.removal
+                                                    .as_ref()
+                                                    .is_some_and(|s| s.error().is_some())
+                                            })),
+                                    |v| {
+                                        v.child(
+                                            div()
+                                                .px_5()
+                                                .py_3()
+                                                .text_sm()
+                                                .bg(rgb(if self.error {
+                                                    0xfaeeec
+                                                } else {
+                                                    0xeff3ff
+                                                }))
+                                                .child(self.status.clone()),
+                                        )
+                                    },
+                                ),
                         )
                         .focus_trap("task-modal-trap", &self.keyboard.overlay),
                 )
