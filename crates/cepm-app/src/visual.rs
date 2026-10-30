@@ -218,7 +218,7 @@ impl Desktop {
                     .w_full()
                     .h(px(58.))
                     .child(switch.child(icon(Lucide::ChevronsUpDown)))
-                    .disabled(self.busy)
+                    .disabled(self.busy && self.browser_task.is_none())
                     .on_click(cx.listener(|v, _, _, cx| {
                         v.switcher = !v.switcher;
                         cx.notify();
@@ -263,8 +263,9 @@ impl Desktop {
                     .h(px(36.))
                     .child(label)
                     .selected(self.page == page)
-                    .disabled(self.busy)
+                    .disabled(self.busy && self.browser_task.is_none())
                     .on_click(cx.listener(move |v, _, _, cx| {
+                        v.cancel_browser_task();
                         v.page = page;
                         v.panel = Panel::None;
                         v.selected = None;
@@ -756,6 +757,18 @@ impl Desktop {
                     .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Guide, w, cx))),
             );
         }
+        if self.target().is_some_and(|p| p.browser == Browser::Edge) {
+            actions = actions.child(
+                Button::new("detail-browser-verify")
+                    .label(if r.waiting_identification() {
+                        "识别扩展"
+                    } else {
+                        "自动核对"
+                    })
+                    .disabled(disabled)
+                    .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Guide, w, cx))),
+            );
+        }
         actions = actions
             .child(
                 Button::new("check-update")
@@ -856,6 +869,8 @@ impl Desktop {
                 "确认方式",
                 if pending {
                     "等待浏览器核对"
+                } else if r.verification == Verification::Automatic {
+                    "浏览器自动核对"
                 } else {
                     "用户已确认"
                 },

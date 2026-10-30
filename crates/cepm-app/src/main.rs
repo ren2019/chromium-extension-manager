@@ -1,3 +1,4 @@
+mod browser_connection;
 mod visual;
 use cepm_core::RemoteOrigin;
 use cepm_core::bulk::{BulkResult, BulkStatus, CheckedUpdate};
@@ -65,6 +66,8 @@ struct Desktop {
     panel: Panel,
     add_step: u8,
     guide_record: Option<Installation>,
+    browser_task: Option<cepm_core::browser::BrowserCancellation>,
+    browser_task_id: u64,
     path_copied: bool,
     source_kind: SourceKind,
     source_update_id: Option<String>,
@@ -279,6 +282,8 @@ impl Desktop {
             panel: Panel::None,
             add_step: 1,
             guide_record: None,
+            browser_task: None,
+            browser_task_id: 0,
             path_copied: false,
             source_kind: SourceKind::Local,
             source_update_id: None,
@@ -342,6 +347,9 @@ impl Desktop {
         cx.notify();
     }
     fn open_panel(&mut self, panel: Panel, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.browser_task.is_some() {
+            self.cancel_browser_task();
+        }
         if self.busy {
             return;
         }
@@ -361,6 +369,7 @@ impl Desktop {
         cx.notify();
     }
     fn clear_target_work(&mut self) {
+        self.cancel_browser_task();
         self.selected = None;
         self.guide_record = None;
         self.path_copied = false;
@@ -389,6 +398,9 @@ impl Desktop {
         Ok(())
     }
     fn select_profile(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.browser_task.is_some() {
+            self.cancel_browser_task();
+        }
         if self.busy {
             return;
         }
@@ -1498,6 +1510,7 @@ impl Desktop {
                                         .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
                                 ),
                             )
+                            .child(self.browser_verification_controls(cx))
                             .when(first_load, |v| {
                                 v.child(
                                     gpui_kit::component::text::TextView::html(
@@ -1752,6 +1765,9 @@ impl Render for Desktop {
         };
         v_flex()
             .on_key_down(cx.listener(|v, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && v.browser_task.is_some() {
+                    v.cancel_browser_task();
+                }
                 if event.keystroke.key == "escape" && !v.busy {
                     v.switcher = false;
                     if v.panel != Panel::Detail {
@@ -1827,8 +1843,9 @@ impl Render for Desktop {
                                                 .icon(gpui_kit::assets::IconName::X)
                                                 .tooltip("关闭")
                                                 .accessibility_label("关闭")
-                                                .disabled(self.busy)
+                                                .disabled(self.busy && self.browser_task.is_none())
                                                 .on_click(cx.listener(|v, _, _, cx| {
+                                                    v.cancel_browser_task();
                                                     v.panel = Panel::None;
                                                     v.preview = None;
                                                     cx.notify();
@@ -1865,8 +1882,11 @@ impl Render for Desktop {
                                             .child(
                                                 Button::new("later")
                                                     .label("关闭")
-                                                    .disabled(self.busy)
+                                                    .disabled(
+                                                        self.busy && self.browser_task.is_none(),
+                                                    )
                                                     .on_click(cx.listener(|v, _, _, cx| {
+                                                        v.cancel_browser_task();
                                                         v.panel = Panel::None;
                                                         cx.notify();
                                                     })),
