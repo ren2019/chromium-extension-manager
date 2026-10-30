@@ -811,6 +811,7 @@ name = "cepm-app"
 version = "0.1.0"
 dependencies = [
  "cepm-core",
+ "chrono",
  "directories",
  "gpui-kit",
  "rfd",
@@ -821,6 +822,7 @@ name = "cepm-core"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "image",
  "serde",
  "serde_json",
  "sha2 0.10.9",
