@@ -417,3 +417,40 @@ fn automatic_recheck_clears_reported_failure_without_changing_files() {
     assert_eq!(result.updated_at, record.updated_at);
     server.join().unwrap();
 }
+
+#[test]
+fn refused_or_revoked_authorization_leaves_pending_files_and_record() {
+    for revoked in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let profile = profile(&root);
+        let (manager, record) = install(&root, &profile);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        fs::write(
+            profile.user_data_dir.join("DevToolsActivePort"),
+            format!(
+                "{}\n/devtools/browser/test-session",
+                listener.local_addr().unwrap().port()
+            ),
+        )
+        .unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(stream).unwrap();
+            let request: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            if revoked {
+                let _ = ws.close(None);
+            } else {
+                let _ = ws.send(tungstenite::Message::Text(
+                    json!({"id":request["id"],"error":{"code":-32000,"message":"Access denied"}})
+                        .to_string()
+                        .into(),
+                ));
+            }
+        });
+        assert!(EdgeSession::connect(&profile, BrowserCancellation::default()).is_err());
+        assert_eq!(manager.list().unwrap()[0], record);
+        assert!(record.install_dir.join("manifest.json").exists());
+        server.join().unwrap();
+    }
+}
