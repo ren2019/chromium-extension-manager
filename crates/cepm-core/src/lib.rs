@@ -1,10 +1,14 @@
 //! Installation use cases, independent of the desktop UI.
+pub mod browser;
 pub mod bulk;
 pub mod operations;
+pub mod presentation;
 pub mod profiles;
 mod releases;
 pub mod remote;
+mod removal;
 mod repository;
+pub use removal::{ManualRemovalConfirmation, RemovalPhase, RemovalState};
 mod updates;
 use fs2::FileExt;
 pub use remote::RemoteOrigin;
@@ -35,6 +39,7 @@ pub struct Target {
 pub enum Verification {
     Pending,
     UserConfirmed,
+    Automatic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +56,10 @@ pub struct Installation {
     pub effective_version: Option<String>,
     pub verification: Verification,
     #[serde(default)]
+    pub load_failed: bool,
+    #[serde(default)]
+    pub removal: Option<RemovalState>,
+    #[serde(default)]
     pub generation: u64,
     #[serde(default)]
     pub content_digest: String,
@@ -64,6 +73,13 @@ pub struct Installation {
     pub last_operation: String,
     #[serde(skip)]
     pub recovery_required: bool,
+}
+
+impl Installation {
+    /// A manually confirmed installation can still need a trusted browser identity.
+    pub fn waiting_identification(&self) -> bool {
+        self.verification == Verification::UserConfirmed && self.extension_id.is_none()
+    }
 }
 
 pub struct Preview {
@@ -120,6 +136,7 @@ impl Manager {
             _lock: lock,
             recovery_errors: Default::default(),
         };
+        manager.validate_storage_directories()?;
         manager
             .recover_updates()
             .map_err(|e| format!("恢复需要处理：{e}。请保留数据目录并修复后重试"))?;
@@ -160,6 +177,7 @@ impl Manager {
         let install_dir = self.root.join("installations").join(&id);
         let content_digest = updates::directory_digest(preview.snapshot.path())?;
         fs::rename(preview.snapshot.path(), &install_dir).map_err(io_error)?;
+        let installed_at = updates::now();
         let record = Installation {
             id,
             name: preview.name,
@@ -171,11 +189,13 @@ impl Manager {
             extension_id: None,
             effective_version: None,
             verification: Verification::Pending,
+            load_failed: false,
+            removal: None,
             generation: 1,
             content_digest,
             historical_version: None,
-            installed_at: updates::now(),
-            updated_at: updates::now(),
+            installed_at,
+            updated_at: installed_at,
             last_operation: "文件已安装，等待浏览器加载与核对".into(),
             recovery_required: false,
         };
@@ -222,6 +242,55 @@ impl Manager {
         Ok(records)
     }
 
+    /// Exact, selectable path for the currently displayed installation handoff.
+    pub fn installation_path(&self, id: &str, target: &Target, generation: u64) -> Result<String> {
+        let record = self.record(id)?;
+        if &record.target != target || record.generation != generation {
+            return Err("安装目标或部署已变化，请重新打开加载说明".into());
+        }
+        self.ensure_unmodified(&record)?;
+        let path = record
+            .install_dir
+            .to_str()
+            .ok_or("安装路径不是有效文本，请重新选择数据目录")?;
+        if !record.install_dir.is_absolute() || path.chars().any(char::is_control) {
+            return Err("安装路径不能直接用于文件夹选择器，请重新选择数据目录".into());
+        }
+        Ok(path.into())
+    }
+
+    /// Records the user's explicit attestation to the displayed deployment, without
+    /// treating a typed ID (or a successful file copy) as browser observation.
+    pub fn confirm_manual(
+        &mut self,
+        id: &str,
+        target: &Target,
+        generation: u64,
+        version: &str,
+    ) -> Result<Installation> {
+        let mut record = self.record(id)?;
+        if &record.target != target {
+            return Err("核对目标配置不一致，请重新选择安装".into());
+        }
+        self.ensure_unmodified(&record)?;
+        if generation != record.generation {
+            return Err("此核对对应的部署已过期，请重新打开详情并在浏览器重载后核对".into());
+        }
+        if version != record.installed_version {
+            return Err("核对版本与磁盘安装版本不一致，请在目标浏览器配置重载后再次核对".into());
+        }
+        record.effective_version = Some(version.into());
+        record.verification = Verification::UserConfirmed;
+        record.load_failed = false;
+        record.last_operation = if record.extension_id.is_none() {
+            "用户已确认浏览器版本，等待浏览器识别（非自动验证）"
+        } else {
+            "用户已确认浏览器版本（非自动验证）"
+        }
+        .into();
+        self.commit_confirmation(record)
+    }
+
     pub fn confirm(
         &mut self,
         id: &str,
@@ -250,7 +319,13 @@ impl Manager {
         record.extension_id = Some(extension_id.into());
         record.effective_version = Some(version.into());
         record.verification = Verification::UserConfirmed;
+        record.load_failed = false;
         record.last_operation = "用户已确认浏览器版本（非自动验证）".into();
+        self.commit_confirmation(record)
+    }
+
+    // Evidence validation stays in each use case; only commit/retirement is shared.
+    fn commit_confirmation(&self, record: Installation) -> Result<Installation> {
         self.save(&record)?;
         let backup = self.transaction_path(&record.id);
         if backup.exists() {

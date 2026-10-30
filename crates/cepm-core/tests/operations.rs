@@ -135,3 +135,71 @@ fn invalid_manifest_diagnostics_request_a_valid_artifact_after_reopening() {
         );
     }
 }
+
+#[test]
+fn successful_history_only_requests_browser_reload_after_file_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = Target {
+        browser: Browser::Edge,
+        profile: "personal".into(),
+    };
+    for (stage, expected) in [
+        (OperationStage::Confirm, "浏览器生效版本已确认"),
+        (OperationStage::Check, "可在扩展详情中查看检查结果"),
+        (OperationStage::Deploy, "磁盘变更仍需在目标浏览器重载并核对"),
+        (
+            OperationStage::Recover,
+            "磁盘变更仍需在目标浏览器重载并核对",
+        ),
+    ] {
+        let manager = Manager::open(temp.path()).unwrap();
+        manager
+            .record_operation(&target, None, stage, Ok(()))
+            .unwrap();
+        drop(manager);
+        let manager = Manager::open(temp.path()).unwrap();
+        let history = manager.operation_history(&target).unwrap();
+        let event = history.iter().find(|event| event.stage == stage).unwrap();
+        assert_eq!(event.status, OperationStatus::Succeeded);
+        assert_eq!(event.next_step, expected, "{stage:?}");
+    }
+}
+
+#[test]
+fn legacy_success_guidance_is_projected_without_rewriting_history_or_custom_messages() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = Target {
+        browser: Browser::Edge,
+        profile: "personal".into(),
+    };
+    let old = "磁盘变更仍需在目标浏览器重载并核对";
+    let cases = [
+        ("Confirm", "Succeeded", old, "浏览器生效版本已确认"),
+        ("Check", "Succeeded", old, "可在扩展详情中查看检查结果"),
+        ("Confirm", "Failed", old, old),
+        ("Check", "Skipped", old, old),
+        ("Deploy", "Succeeded", old, old),
+        ("Recover", "Succeeded", old, old),
+        ("Confirm", "Succeeded", "保留自定义提示", "保留自定义提示"),
+        ("Check", "Succeeded", "另一个提示", "另一个提示"),
+    ];
+    drop(Manager::open(temp.path()).unwrap());
+    let stored: Vec<_> = cases.iter().enumerate().map(|(index, (stage, status, text, _))| {
+        serde_json::json!({"target":{"browser":"Edge","profile":"personal"},"installation_id":null,"at":index as u64 + 1,"stage":stage,"status":status,"reason":"操作已完成","next_step":text})
+    }).collect();
+    let bytes = serde_json::to_vec(&stored).unwrap();
+    fs::write(temp.path().join("operations.json"), &bytes).unwrap();
+    let manager = Manager::open(temp.path()).unwrap();
+    let history = manager.operation_history(&target).unwrap();
+    for (index, (_, _, _, expected)) in cases.iter().enumerate() {
+        let event = history
+            .iter()
+            .find(|event| event.at == index as u64 + 1)
+            .unwrap();
+        assert_eq!(&event.next_step, expected);
+    }
+    assert_eq!(
+        fs::read(temp.path().join("operations.json")).unwrap(),
+        bytes
+    );
+}

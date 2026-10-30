@@ -9,3 +9,10 @@ cepm-core = { path = "../cepm-core" }
 gpui-kit = "=0.8.1"
 rfd = "0.15"
 directories = "6"
+
+chrono = "0.4"
+
+[features]
+# Enable the adapter validated on the exact supported macOS Edge build.
+default = ["edge-uninstall"]
+edge-uninstall = ["cepm-core/edge-uninstall"]

@@ -11,6 +11,7 @@ pub enum OperationStage {
     Confirm,
     Recover,
     Bind,
+    Uninstall,
 }
 impl OperationStage {
     pub fn label(self) -> &'static str {
@@ -21,6 +22,7 @@ impl OperationStage {
             Self::Confirm => "核对生效",
             Self::Recover => "恢复文件",
             Self::Bind => "定位配置",
+            Self::Uninstall => "卸载清理",
         }
     }
 }
@@ -29,6 +31,7 @@ pub enum OperationStatus {
     Succeeded,
     Failed,
     Skipped,
+    PendingCleanup,
 }
 impl OperationStatus {
     pub fn label(self) -> &'static str {
@@ -36,6 +39,7 @@ impl OperationStatus {
             Self::Succeeded => "已完成",
             Self::Failed => "失败",
             Self::Skipped => "未执行",
+            Self::PendingCleanup => "清理未完成",
         }
     }
 }
@@ -43,11 +47,15 @@ impl OperationStatus {
 pub struct OperationRecord {
     pub target: Target,
     pub installation_id: Option<String>,
+    #[serde(default)]
+    pub installation_name: Option<String>,
     pub at: u64,
     pub stage: OperationStage,
     pub status: OperationStatus,
     pub reason: String,
     pub next_step: String,
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 impl Manager {
     /// One source dispatch for single and bulk checks; failure never changes installation state.
@@ -78,7 +86,11 @@ impl Manager {
             Ok(()) => (
                 OperationStatus::Succeeded,
                 "操作已完成",
-                "磁盘变更仍需在目标浏览器重载并核对",
+                match stage {
+                    OperationStage::Confirm => "浏览器生效版本已确认",
+                    OperationStage::Check => "可在扩展详情中查看检查结果",
+                    _ => "磁盘变更仍需在目标浏览器重载并核对",
+                },
             ),
             Err(error) => {
                 let (reason, next_step) = diagnosis(error);
@@ -106,21 +118,67 @@ impl Manager {
         reason: &str,
         next_step: &str,
     ) -> Result<()> {
-        if let Some(id) = id
-            && self.record(id)?.target != *target
-        {
-            return Err("操作记录目标不一致，请重新选择配置".into());
-        }
+        let installation_name = if let Some(id) = id {
+            let record = self.record(id)?;
+            if record.target != *target {
+                return Err("操作记录目标不一致，请重新选择配置".into());
+            }
+            Some(record.name)
+        } else {
+            None
+        };
         let mut history = self.read_operations()?;
         history.push(OperationRecord {
             target: target.clone(),
             installation_id: id.map(str::to_owned),
+            installation_name,
             at: crate::updates::now(),
             stage,
             status,
             reason: reason.into(),
             next_step: next_step.into(),
+            operation_id: None,
         });
+        self.save_history(history)
+    }
+    pub(crate) fn record_removal_cleanup(&self, record: &crate::Installation) -> Result<()> {
+        let state = record.removal.as_ref().ok_or("浏览器移除尚未确认")?;
+        let mut history = self.read_operations()?;
+        for event in &mut history {
+            if event.installation_id.as_deref() == Some(&record.id)
+                && event.installation_name.is_none()
+            {
+                event.installation_name = Some(record.name.clone());
+            }
+        }
+        if history
+            .iter()
+            .any(|event| event.operation_id.as_deref() == Some(&state.operation_id))
+        {
+            return self.save_history(history);
+        }
+        history.push(OperationRecord {
+            target: record.target.clone(),
+            installation_id: Some(record.id.clone()),
+            installation_name: Some(record.name.clone()),
+            at: crate::updates::now(),
+            stage: OperationStage::Uninstall,
+            status: OperationStatus::PendingCleanup,
+            reason: match state.method {
+                crate::removal::RemovalMethod::UserConfirmed => {
+                    "用户确认浏览器已移除；受管文件已清理"
+                }
+                crate::removal::RemovalMethod::Automatic => {
+                    "浏览器自动卸载并回读确认移除；受管文件已清理"
+                }
+            }
+            .into(),
+            next_step: "管理记录移除失败时可重试清理，无需重复浏览器操作".into(),
+            operation_id: Some(state.operation_id.clone()),
+        });
+        self.save_history(history)
+    }
+    fn save_history(&self, mut history: Vec<OperationRecord>) -> Result<()> {
         if history.len() > 100 {
             history.drain(..history.len() - 100);
         }
@@ -146,11 +204,45 @@ impl Manager {
             .into_iter()
             .rev()
             .filter(|r| &r.target == target)
+            .map(|mut event| {
+                // Correct legacy generic guidance only in the read projection;
+                // retain audit bytes, custom text and unsuccessful outcomes.
+                if event.status == OperationStatus::Succeeded
+                    && event.next_step == "磁盘变更仍需在目标浏览器重载并核对"
+                {
+                    match event.stage {
+                        OperationStage::Confirm => event.next_step = "浏览器生效版本已确认".into(),
+                        OperationStage::Check => event.next_step = "可在扩展详情中查看检查结果".into(),
+                        _ => {}
+                    }
+                }
+                // Deleting the final record is the commit point. Project completion
+                // from absence so a crash cannot lose an audit update after deletion.
+                if event.stage == OperationStage::Uninstall
+                    && matches!(event.status, OperationStatus::PendingCleanup | OperationStatus::Succeeded)
+                {
+                    let complete = event.installation_id.as_ref().is_some_and(|id| {
+                        uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id)
+                            && self.validate_storage_directories().is_ok()
+                            && [self.root.join("records").join(format!("{id}.json")),
+                                self.root.join("installations").join(id), self.transaction_path(id)]
+                                .iter().all(|path| matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+                    });
+                    event.status = if complete { OperationStatus::Succeeded } else { OperationStatus::PendingCleanup };
+                    event.next_step = if complete { "本安装的受管文件、备份及管理记录已清理" } else { "清理尚未完成，可重试；无需重复浏览器移除" }.into();
+                }
+                event
+            })
             .collect())
     }
 }
 fn diagnosis(error: &str) -> (&'static str, &'static str) {
-    if error.contains("找不到 gh") {
+    if error.contains("用户反馈浏览器加载失败") {
+        (
+            "用户反馈更新失败",
+            "重新安装当前版本、选择其他版本或显式恢复旧文件",
+        )
+    } else if error.contains("找不到 gh") {
         (
             "GitHub CLI 未安装",
             "安装 gh 并完成 gh auth login；本地目录仍可用",

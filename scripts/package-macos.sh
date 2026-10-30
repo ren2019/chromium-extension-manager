@@ -33,14 +33,16 @@ mkdir -p "$output_dir"
 staging="$(mktemp -d "$output_dir/.cepm.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 app="$staging/CEPM.app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp crates/cepm-app/assets/logo.icns "$app/Contents/Resources/CEPM.icns"
 cp "$binary" "$app/Contents/MacOS/cepm-app"
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>CEPM</string>
-  <key>CFBundleDisplayName</key><string>CEPM</string>
+  <key>CFBundleName</key><string>Chromium Extension Package Manager</string>
+  <key>CFBundleDisplayName</key><string>Chromium Extension Package Manager</string>
+  <key>CFBundleIconFile</key><string>CEPM.icns</string>
   <key>CFBundleIdentifier</key><string>dev.cepm.app</string>
   <key>CFBundleExecutable</key><string>cepm-app</string>
   <key>CFBundlePackageType</key><string>APPL</string>
