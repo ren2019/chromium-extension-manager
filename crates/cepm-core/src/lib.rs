@@ -67,6 +67,13 @@ pub struct Installation {
     pub recovery_required: bool,
 }
 
+impl Installation {
+    /// A manually confirmed installation can still need a trusted browser identity.
+    pub fn waiting_identification(&self) -> bool {
+        self.verification == Verification::UserConfirmed && self.extension_id.is_none()
+    }
+}
+
 pub struct Preview {
     origin: Option<RemoteOrigin>,
     source: PathBuf,
@@ -222,6 +229,59 @@ impl Manager {
         }
         records.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(records)
+    }
+
+    /// Exact, selectable path for the currently displayed installation handoff.
+    pub fn installation_path(&self, id: &str, target: &Target, generation: u64) -> Result<String> {
+        let record = self.record(id)?;
+        if &record.target != target || record.generation != generation {
+            return Err("安装目标或部署已变化，请重新打开加载说明".into());
+        }
+        self.ensure_unmodified(&record)?;
+        let path = record
+            .install_dir
+            .to_str()
+            .ok_or("安装路径不是有效文本，请重新选择数据目录")?;
+        if !record.install_dir.is_absolute() || path.chars().any(char::is_control) {
+            return Err("安装路径不能直接用于文件夹选择器，请重新选择数据目录".into());
+        }
+        Ok(path.into())
+    }
+
+    /// Records the user's explicit attestation to the displayed deployment, without
+    /// treating a typed ID (or a successful file copy) as browser observation.
+    pub fn confirm_manual(
+        &mut self,
+        id: &str,
+        target: &Target,
+        generation: u64,
+        version: &str,
+    ) -> Result<Installation> {
+        let mut record = self.record(id)?;
+        if &record.target != target {
+            return Err("核对目标配置不一致，请重新选择安装".into());
+        }
+        self.ensure_unmodified(&record)?;
+        if generation != record.generation {
+            return Err("此核对对应的部署已过期，请重新打开详情并在浏览器重载后核对".into());
+        }
+        if version != record.installed_version {
+            return Err("核对版本与磁盘安装版本不一致，请在目标浏览器配置重载后再次核对".into());
+        }
+        record.effective_version = Some(version.into());
+        record.verification = Verification::UserConfirmed;
+        record.last_operation = if record.extension_id.is_none() {
+            "用户已确认浏览器版本，等待浏览器识别（非自动验证）"
+        } else {
+            "用户已确认浏览器版本（非自动验证）"
+        }
+        .into();
+        self.save(&record)?;
+        let backup = self.transaction_path(&record.id);
+        if backup.exists() {
+            fs::remove_dir_all(backup).map_err(io_error)?;
+        }
+        Ok(record)
     }
 
     pub fn confirm(
