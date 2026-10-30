@@ -27,6 +27,7 @@ pub(super) fn apply_theme(cx: &mut App) {
         theme.colors.foreground = rgb(0x1a1a1d).into();
         theme.colors.muted_foreground = rgb(MUTED).into();
         theme.colors.border = rgb(BORDER).into();
+        theme.colors.ring = rgb(0x3b82f6).into();
         theme.colors.secondary_active = rgb(0xe1e8fb).into();
         theme.colors.primary = rgb(GREEN).into();
         theme.colors.primary_foreground = rgb(0xffffff).into();
@@ -212,6 +213,7 @@ impl Desktop {
         side = side
             .child(
                 Button::new("profile-switcher")
+                    .track_focus(&self.keyboard.profile)
                     .accessibility_label(format!("切换配置：{}", self.target_label()))
                     .tooltip(self.target_label())
                     .min_w_0()
@@ -302,6 +304,8 @@ impl Desktop {
     pub(super) fn profile_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut menu = v_flex()
             .id("profile-menu")
+            .track_focus(&self.keyboard.overlay)
+            .tab_stop(false)
             .w(px(310.))
             .max_h(px(440.))
             .overflow_y_scroll()
@@ -392,7 +396,13 @@ impl Desktop {
                     cx.notify();
                 }),
             ))
-            .child(div().absolute().left(px(12.)).top(px(108.)).child(menu))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(12.))
+                    .top(px(108.))
+                    .child(menu.focus_trap("profile-menu-trap", &self.keyboard.overlay)),
+            )
             .into_any_element()
     }
     fn notice(&self) -> Div {

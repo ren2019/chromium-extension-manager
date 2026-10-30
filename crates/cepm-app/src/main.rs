@@ -1,4 +1,6 @@
 mod browser_connection;
+mod keyboard;
+use gpui_kit::base::FocusTrapElement;
 mod visual;
 use cepm_core::RemoteOrigin;
 use cepm_core::bulk::{BulkResult, BulkStatus, CheckedUpdate};
@@ -51,6 +53,7 @@ enum Panel {
     Bulk,
 }
 struct Desktop {
+    keyboard: keyboard::Keyboard,
     manager: Option<Arc<Mutex<Manager>>>,
     profiles: Option<ProfileBook>,
     candidates: Vec<ProfileCandidate>,
@@ -267,6 +270,7 @@ impl Desktop {
         let artwork = load_artwork(manager.as_ref(), &records);
         let error = !status.is_empty();
         Self {
+            keyboard: keyboard::Keyboard::new(window, cx),
             manager,
             profiles,
             candidates,
@@ -1744,8 +1748,19 @@ impl Desktop {
     }
 }
 impl Render for Desktop {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = self.panel;
+        self.keyboard.sync(
+            if self.switcher {
+                1
+            } else if panel != Panel::None && panel != Panel::Detail {
+                2
+            } else {
+                0
+            },
+            window,
+            cx,
+        );
         let title = match panel {
             Panel::Bind => "浏览器配置",
             Panel::Legacy => "定位旧安装",
@@ -1764,6 +1779,10 @@ impl Render for Desktop {
             Panel::None => "",
         };
         v_flex()
+            .id("desktop-focus")
+            .tab_group()
+            .track_focus(&self.keyboard.root)
+            .tab_stop(false)
             .on_key_down(cx.listener(|v, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && v.browser_task.is_some() {
                     v.cancel_browser_task();
@@ -1810,6 +1829,9 @@ impl Render for Desktop {
             .when(panel != Panel::None && panel != Panel::Detail, |root| {
                 root.child(
                     div()
+                        .id("task-modal-focus")
+                        .track_focus(&self.keyboard.overlay)
+                        .tab_stop(false)
                         .absolute()
                         .top(px(36.))
                         .bottom_0()
@@ -1893,7 +1915,8 @@ impl Render for Desktop {
                                             ),
                                     )
                                 }),
-                        ),
+                        )
+                        .focus_trap("task-modal-trap", &self.keyboard.overlay),
                 )
             })
     }

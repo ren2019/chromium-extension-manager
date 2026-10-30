@@ -17,3 +17,9 @@ Dates display local time from existing records. Initial deployment uses one time
 - `cargo test --workspace`: 50 tests passed. Native build and Clippy with warnings denied passed (dependency `block` retains Cargo's existing future-incompatibility advisory).
 - Parent agent used the actual native app with isolated data at 1120×780. Verified library, full detail, collapsed comparison/navigation, profile counts, two pins, remembered selection and empty state. Review fixes included readable AX names, profile truncation/tooltip, equal-width detail cards, blue selection styling, and a single light titlebar. Screenshot evidence collected by parent under `/tmp/cepm-implementation-10/screenshots/`; final packaged acceptance belongs to the integration work.
 - No personal browser writes or extension uninstall took place in this ticket. No Windows runtime verification claimed. The subsequent install/confirmation, repair and Edge tickets are not represented as complete by this visual work.
+
+## Keyboard follow-up
+
+The native smoke exposed that component buttons had built-in tab stops but the application had not created a tab group or an initial focus path. The application now establishes GPUI's tab group, uses the existing button keyboard/ring handling, and uses GPUI's focus traps for the Profile menu and task dialog. Escape closes the overlay; focus returns to its surviving keyboard trigger, otherwise the Profile selector. Navigation that removes the focused row re-establishes the root focus path.
+
+Parent native validation: initial Tab/Return opens Profile; Tab visibly moves the focus ring inside the menu; Escape returns to the trigger and Return reopens it. Screenshot: `/tmp/cepm-implementation-10/screenshots/11-keyboard-menu.png`. The native accessibility tool continued reporting the window as focused, so behavior and visible ring—not that tool's focus field—were used as evidence. Focus accent uses the approved blue (`#3b82f6`).
