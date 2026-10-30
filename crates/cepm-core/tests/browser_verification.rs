@@ -174,6 +174,80 @@ fn authorized_browser_identification_fills_missing_id_and_persists_automatic_con
 }
 
 #[test]
+fn fresh_default_profile_without_last_used_can_identify_its_extension() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = profile(&root);
+    fs::write(
+        profile.user_data_dir.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{}}}}"#,
+    )
+    .unwrap();
+    let (mut manager, record) = install(&root, &profile);
+    let server = serve(
+        &profile,
+        json!([{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":record.install_dir,"version":"1.0.0","enabled":true}]),
+        None,
+    );
+    let mut session = EdgeSession::connect(&profile, BrowserCancellation::default()).unwrap();
+    let evidence = session.verify(&record).unwrap();
+    drop(session);
+    let confirmed = manager
+        .confirm_browser(evidence, &profile.target())
+        .unwrap();
+    assert_eq!(confirmed.verification, Verification::Automatic);
+    assert_eq!(
+        confirmed.extension_id.as_deref(),
+        Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn absent_last_used_does_not_relax_other_profile_guards() {
+    for case in [
+        "non-default",
+        "shared-index",
+        "unindexed-directory",
+        "null",
+        "different",
+        "empty",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let mut profile = profile(&root);
+        let mut state = json!({"profile":{"info_cache":{"Default":{}}}});
+        match case {
+            "non-default" => {
+                fs::rename(
+                    profile.user_data_dir.join("Default"),
+                    profile.user_data_dir.join("Profile 1"),
+                )
+                .unwrap();
+                profile.profile_directory = "Profile 1".into();
+                state["profile"]["info_cache"] = json!({"Profile 1":{}});
+            }
+            "shared-index" => state["profile"]["info_cache"]["Profile 1"] = json!({}),
+            "unindexed-directory" => {
+                fs::create_dir(profile.user_data_dir.join("Profile 1")).unwrap();
+                fs::write(profile.user_data_dir.join("Profile 1/Preferences"), "{}").unwrap();
+            }
+            "null" => state["profile"]["last_used"] = Value::Null,
+            "different" => state["profile"]["last_used"] = json!("Profile 1"),
+            "empty" => state["profile"]["last_used"] = json!(""),
+            _ => unreachable!(),
+        }
+        fs::write(profile.user_data_dir.join("Local State"), state.to_string()).unwrap();
+        let error = EdgeSession::connect(&profile, BrowserCancellation::default())
+            .err()
+            .unwrap();
+        assert!(error.contains("配置"), "{case}: {error}");
+        assert!(
+            !error.contains("远程调试"),
+            "must reject before connecting: {case}: {error}"
+        );
+    }
+}
+
+#[test]
 fn a_profile_created_after_observation_invalidates_the_result() {
     let root = tempfile::tempdir().unwrap();
     let profile = profile(&root);
@@ -226,6 +300,11 @@ fn a_cancelled_result_cannot_confirm_even_if_it_arrived_successfully() {
 fn wrong_native_profile_path_never_confirms_the_installation() {
     let root = tempfile::tempdir().unwrap();
     let profile = profile(&root);
+    fs::write(
+        profile.user_data_dir.join("Local State"),
+        r#"{"profile":{"info_cache":{"Default":{}}}}"#,
+    )
+    .unwrap();
     let (manager, record) = install(&root, &profile);
     let server = serve(&profile, json!([]), Some(root.path().display().to_string()));
     let error = EdgeSession::connect(&profile, BrowserCancellation::default())

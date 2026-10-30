@@ -524,9 +524,13 @@ fn validate_single_profile(profile: &BrowserProfile) -> Result<()> {
     if index.len() != 1 || !index.contains_key(&profile.profile_directory) {
         return Err("此浏览器目录包含多个配置或目标不明确，请使用手动确认".into());
     }
-    if state.pointer("/profile/last_used").and_then(|v| v.as_str())
-        != Some(profile.profile_directory.as_str())
-    {
+    // Fresh Default profiles may omit the persisted preference. Only that
+    // sole-profile case can proceed to the live edge://version path proof.
+    let last_used_matches = match state.pointer("/profile/last_used") {
+        None => profile.profile_directory == "Default",
+        Some(value) => value.as_str() == Some(profile.profile_directory.as_str()),
+    };
+    if !last_used_matches {
         return Err("浏览器实际配置与所选目标不一致，请使用手动确认".into());
     }
     if ["Guest Profile", "System Profile"].contains(&profile.profile_directory.as_str()) {
