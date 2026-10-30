@@ -1,0 +1,112 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'scripts/package-*'
+      - 'scripts/release-*'
+      - 'scripts/test_release_metadata.py'
+      - 'docs/windows-package.txt'
+      - 'docs/release-notes.md'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: version
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_release_metadata.py'
+          python3 scripts/release-metadata.py
+  build:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            platform: macos-arm64
+          - os: windows-2025-vs2026
+            platform: windows-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.platform }}
+      - name: Check and test
+        if: runner.os == 'macOS'
+        run: |
+          cargo fmt --all --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: scripts/package-macos.sh release
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Profile release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            target/bundle/release/CEPM-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}.zip
+            target/bundle/release/CEPM-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete release assets
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          for platform in macos-arm64 windows-x64; do
+            archive="CEPM-$VERSION-$platform.zip"
+            test -s "dist/$archive"
+            (cd dist && sha256sum --check "$archive.sha256")
+            unzip -t "dist/$archive"
+          done
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          options=()
+          if [[ "$PRERELEASE" == true ]]; then options+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 \
+            --verify-tag --title "CEPM $RELEASE_TAG" --generate-notes \
+            --notes-file docs/release-notes.md "${options[@]}"

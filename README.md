@@ -8,7 +8,9 @@ Windows/macOS、Chrome/Edge 是产品目标。macOS Chrome 与 Edge 的主 Profi
 
 ## 获取与运行
 
-[GitHub Actions](https://github.com/ren2019/chromium-extension-manager/actions/workflows/ci.yml) 在检查通过后提供 `CEPM-macos-<架构>-debug` 制品。下载并解开其中的 ZIP 后打开 `CEPM.app`。制品是运行机器架构的开发构建，**未使用 Developer ID 签名或公证**，不是通用二进制；下载件可能受到 macOS 安全策略限制。也可以按下面步骤从源码构建。
+发布版本可从 [GitHub Releases](https://github.com/ren2019/chromium-extension-manager/releases) 下载：macOS Apple Silicon 的 `.app` ZIP、Windows x64 便携 ZIP，以及 SHA-256 校验文件。首次版本尚未发布时，可从 [Release 工作流](https://github.com/ren2019/chromium-extension-manager/actions/workflows/release.yml) 的手动构建下载制品。
+
+包目前未进行代码签名，macOS 也未做 Developer ID 公证；Windows 的原生界面和浏览器流程尚未验收。下载件可能受到系统安全策略限制，也可从源码构建。维护者的打标签、试运行和发布步骤见[发布流程](docs/releases.md)。原 [CI 工作流](https://github.com/ren2019/chromium-extension-manager/actions/workflows/ci.yml) 继续提供 macOS debug 制品。
 
 仅安装本地目录不需要 GitHub CLI。GitHub 来源要求已安装并授权的 `gh`，权限和 Token 由它管理：
 
@@ -28,10 +30,10 @@ macOS 从 Finder 启动时可能没有终端的完整 PATH。CEPM 会在找不�
 1. **选择配置**：在左侧顶部添加或选择具体浏览器 Profile。可使用发现的候选，也可从 `chrome://version` / `edge://version` 复制 Profile Path，并指定浏览器应用。配置必须已存在；找不到时暂停维护，不自动改用其他配置。
 2. **添加来源**：选择本地完整扩展目录；或输入 GitHub 仓库/Release 地址并选择标签和 ZIP；或指定仓库、分支/标签/提交与扩展子目录。工具不会构建源码。安装版本以 `manifest.json.version` 为准，不必等于仓库 Release 标签。
 3. **确认并安装**：预览扩展名称、清单版本和目标配置，再确认。存在多个附件或扩展根目录时由你选择。CEPM 校验后复制到独立的固定安装目录，来源目录可另行移动。
-4. **首次加载**：请求打开当前 Profile 的原生扩展管理页；若浏览器显示新标签页，使用旁边的“复制地址”在该窗口粘贴。开启开发者模式，选择“加载已解压的扩展程序”，使用 CEPM 提供的固定目录。核对浏览器中显示的 ID、版本和 Profile 后回到 CEPM 确认。打开管理页或完成复制都不会自动标为已生效。
+4. **首次加载**：请求打开当前 Profile 的原生扩展管理页；若浏览器显示新标签页，使用旁边的“复制地址”在该窗口粘贴。开启开发者模式，选择“加载已解压的扩展程序”，使用 CEPM 提供的固定目录。在目标 Profile 完成加载后回到 CEPM 自动核对；无法连接时可人工确认版本，正常流程无需填写扩展 ID。打开管理页或完成复制都不会自动标为已生效。
 5. **维护更新**：检查当前配置中的安装，预览目标版本后更新。批量操作仅执行普通升级，逐项报告结果；一项失败不撤销其他项。旧版降级与同版本内容变化均单独确认。部署后在原生页重载，再回到 CEPM 核对。
 
-同一扩展在不同 Profile 是独立安装。原生页继续负责启停、权限和移除；CEPM 不接管已有扩展，也不会自动关闭浏览器。退出 CEPM 后固定目录仍保留，扩展可以继续使用。
+同一扩展在不同 Profile 是独立安装。原生页继续负责启停与权限；CEPM 可卸载已验证目标中的受管安装，不接管已有扩展，也不会自动关闭浏览器。自动卸载限已验证的 macOS Edge 版本和单 Profile 数据目录，其余环境提供手动移除流程。退出 CEPM 后固定目录仍保留，扩展可以继续使用。
 
 ## 失败与恢复
 

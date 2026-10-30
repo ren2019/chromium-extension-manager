@@ -1,5 +1,5 @@
 #!/bin/bash
-# Produce a development bundle for this Mac; no Developer ID signing or notarization.
+# Produce a native bundle for this Mac; no Developer ID signing or notarization.
 set -euo pipefail
 
 if [[ "$(uname -s)" != Darwin ]]; then
@@ -53,6 +53,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 /usr/bin/plutil -lint "$app/Contents/Info.plist"
 archive="$output_dir/CEPM-macos-$arch-$profile.zip"
+if [[ "$profile" == release ]]; then
+  archive="$output_dir/CEPM-$version-macos-$arch.zip"
+fi
 /usr/bin/ditto -c -k --keepParent "$app" "$staging/CEPM.zip"
 mv -f "$staging/CEPM.zip" "$archive"
 # Only replace this script's generated bundle, never application data.

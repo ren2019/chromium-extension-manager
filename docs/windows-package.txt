@@ -1,0 +1,18 @@
+Chromium Extension Package Manager (CEPM)
+
+Extract the whole ZIP, then run CEPM.exe. This is an unsigned portable x64
+Windows build. Native Windows GUI and browser workflows have not been validated.
+If Windows reports a missing VCRUNTIME/MSVCP DLL, install Microsoft's official
+Visual C++ x64 Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe
+Do not download individual DLLs from third-party sites.
+
+GitHub sources require GitHub CLI (gh) installed and authenticated separately.
+Local-folder sources do not require gh. Browser extension loading remains in
+the browser's native extension manager. Automatic Edge removal is currently
+limited to the verified macOS Edge build, so Windows uses the manual flow.
+
+Application data is stored separately under your Windows user profile. Keep
+that data directory in place: the browser loads extensions from its fixed paths.
+Replacing this portable application folder does not remove managed extensions.
+
+Project and issues: https://github.com/ren2019/chromium-extension-manager
