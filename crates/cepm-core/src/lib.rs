@@ -52,6 +52,8 @@ pub struct Installation {
     pub effective_version: Option<String>,
     pub verification: Verification,
     #[serde(default)]
+    pub load_failed: bool,
+    #[serde(default)]
     pub generation: u64,
     #[serde(default)]
     pub content_digest: String,
@@ -180,6 +182,7 @@ impl Manager {
             extension_id: None,
             effective_version: None,
             verification: Verification::Pending,
+            load_failed: false,
             generation: 1,
             content_digest,
             historical_version: None,
@@ -270,6 +273,7 @@ impl Manager {
         }
         record.effective_version = Some(version.into());
         record.verification = Verification::UserConfirmed;
+        record.load_failed = false;
         record.last_operation = if record.extension_id.is_none() {
             "用户已确认浏览器版本，等待浏览器识别（非自动验证）"
         } else {
@@ -312,6 +316,7 @@ impl Manager {
         record.extension_id = Some(extension_id.into());
         record.effective_version = Some(version.into());
         record.verification = Verification::UserConfirmed;
+        record.load_failed = false;
         record.last_operation = "用户已确认浏览器版本（非自动验证）".into();
         self.save(&record)?;
         let backup = self.transaction_path(&record.id);
