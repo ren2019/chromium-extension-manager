@@ -34,7 +34,7 @@ GitHub Actions 的 [Release 工作流](https://github.com/ren2019/chromium-exten
 
 macOS 可运行 `shasum -a 256 -c <文件名>.sha256`。Windows 可用 `Get-FileHash <文件名>.zip -Algorithm SHA256`，与摘要文件比较。
 
-现有 macOS 本机打包入口 `scripts/package-macos.sh release` 继续有效；Windows 使用 PowerShell 7 执行 `./scripts/package-windows.ps1 -Profile release`。两者均构建当前机器的原生目标并输出到 Cargo 目标目录 `bundle/release/`。Debug 包仍保留原文件名。
+现有 macOS 本机打包入口 `scripts/package-macos.sh release` 继续有效；Windows 使用 PowerShell 7 执行 `./scripts/package-windows.ps1 -BuildProfile release`。两者均构建当前机器的原生目标并输出到 Cargo 目标目录 `bundle/release/`。Debug 包仍保留原文件名。
 
 ## 当前边界
 

@@ -57,15 +57,15 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cargo fmt --all --check
-          cargo test --workspace --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --release --locked
+          cargo clippy --workspace --all-targets --release --locked -- -D warnings
       - name: Package macOS
         if: runner.os == 'macOS'
         run: scripts/package-macos.sh release
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -Profile release
+        run: ./scripts/package-windows.ps1 -BuildProfile release
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}
