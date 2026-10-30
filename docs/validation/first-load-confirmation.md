@@ -11,7 +11,7 @@
 - 错误目标、旧代数和版本不符的确认不修改安装记录；一个配置的确认不影响另一配置。
 - 安装和文件更新时间不会被确认改写。既有已知 ID 仍保留，旧 `confirm` 兼容入口仍受原身份检查保护。
 
-全 workspace 57 项核心测试、Clippy all-targets（warnings denied）和格式检查通过。原生应用成功构建。
+全 workspace 52 项核心测试、Clippy all-targets（warnings denied）和格式检查通过。原生应用成功构建。
 
 ## 待集成验收
 
