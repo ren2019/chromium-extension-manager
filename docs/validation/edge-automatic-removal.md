@@ -4,7 +4,7 @@
 
 The integration owner completed the isolated real-browser acceptance on macOS Edge **156.0.4314.50**. The application now enables `edge-uninstall` by default, so normal packaging includes the validated adapter. `cepm-core` keeps the feature off by default; the runtime still refuses automatic removal outside that exact macOS Edge build or in shared multi-Profile roots. Other cases retain the manual flow.
 
-**The user's daily OpenCLI uninstall/reinstall and persistence/functional validation is still pending.** This activation change is prepared for integration after that acceptance; it does not claim the daily cycle has passed.
+The user's explicitly authorized daily OpenCLI uninstall/reinstall, normal-restart persistence and functional connection checks also passed on 2026-10-30. See [the acceptance record](spec10-edge-acceptance.md). Temporary debugging was disabled after validation.
 
 ## Isolated real-browser evidence
 
@@ -58,8 +58,6 @@ cargo run -p cepm-core --features edge-uninstall --example uninstall_edge -- <CE
 
 This is destructive to the specified extension and its owned files; use only the explicitly authorized disposable fixture or user-authorized target. Browser approval and precise binding still apply. Read-only identity preparation remains `--example verify_edge`.
 
-## Remaining daily acceptance
-
-The integration owner must complete and record the user's expressly requested daily OpenCLI uninstall/reinstall, restart persistence and functional check before merging this activation. The request authorizes that specific cycle; browser authorization and separately required restart permission still apply. Isolated native acceptance above does not substitute for that daily result.
+## Compatibility limits
 
 Shared-root arbitrary concurrent Profile targeting remains unsupported because root CDP Extensions operations have no Profile selector. The narrow single-Profile gate and fresh checks are not an atomic lease against concurrent Profile creation. Do not mark general multi-Profile automatic writes as passed. Existing Windows runtime, other Edge versions and automatic persistent loading/reload remain unverified.
