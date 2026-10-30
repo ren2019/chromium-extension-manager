@@ -208,3 +208,102 @@ fn declared_rule_sets_and_sandbox_pages_must_exist() {
     fs::write(source.join("sandbox.html"), "<!doctype html>").unwrap();
     assert!(manager.preview_local(&source).is_ok());
 }
+
+#[test]
+fn manual_load_confirmation_needs_no_id_and_survives_reopen_waiting_identification() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path());
+    let root = temp.path().join("managed with 空格");
+    let mut manager = Manager::open(&root).unwrap();
+    let record = manager
+        .install_local(manager.preview_local(&source).unwrap(), target())
+        .unwrap();
+    let confirmed = manager
+        .confirm_manual(&record.id, &target(), record.generation, "1.2.3")
+        .unwrap();
+    assert_eq!(confirmed.verification, Verification::UserConfirmed);
+    assert_eq!(confirmed.effective_version.as_deref(), Some("1.2.3"));
+    assert!(confirmed.extension_id.is_none());
+    assert!(confirmed.waiting_identification());
+    assert_eq!(confirmed.installed_at, record.installed_at);
+    assert_eq!(confirmed.updated_at, record.updated_at);
+    drop(manager);
+    let reopened = Manager::open(&root).unwrap().list().unwrap().remove(0);
+    assert_eq!(reopened, confirmed);
+    assert!(reopened.waiting_identification());
+}
+
+#[test]
+fn handoff_uses_exact_owned_path_and_rejects_stale_or_other_target_actions() {
+    let temp = TempDir::new().unwrap();
+    let source = fixture(temp.path());
+    let root = temp.path().join("managed with 空格");
+    let mut manager = Manager::open(&root).unwrap();
+    let record = manager
+        .install_local(manager.preview_local(&source).unwrap(), target())
+        .unwrap();
+    let other_target = Target {
+        browser: Browser::Edge,
+        profile: "other".into(),
+    };
+    let other = manager
+        .install_local(
+            manager.preview_local(&source).unwrap(),
+            other_target.clone(),
+        )
+        .unwrap();
+    let path = manager
+        .installation_path(&record.id, &target(), record.generation)
+        .unwrap();
+    assert_eq!(path, record.install_dir.to_str().unwrap());
+    assert!(path.contains("managed with 空格/installations/"));
+    assert!(!path.contains('\n'));
+    assert!(std::path::Path::new(&path).is_absolute());
+    assert_ne!(path, source.to_str().unwrap());
+    assert!(
+        manager
+            .installation_path(&record.id, &other_target, record.generation)
+            .is_err()
+    );
+    assert!(
+        manager
+            .installation_path(&record.id, &target(), record.generation + 1)
+            .is_err()
+    );
+    assert!(
+        manager
+            .confirm_manual(&record.id, &other_target, record.generation, "1.2.3")
+            .is_err()
+    );
+    assert!(
+        manager
+            .confirm_manual(&record.id, &target(), record.generation + 1, "1.2.3")
+            .is_err()
+    );
+    assert!(
+        manager
+            .confirm_manual(&record.id, &target(), record.generation, "9")
+            .is_err()
+    );
+    assert_eq!(
+        manager
+            .list()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == record.id)
+            .unwrap(),
+        &record
+    );
+    manager
+        .confirm_manual(&record.id, &target(), record.generation, "1.2.3")
+        .unwrap();
+    assert_eq!(
+        manager
+            .list()
+            .unwrap()
+            .iter()
+            .find(|r| r.id == other.id)
+            .unwrap(),
+        &other
+    );
+}

@@ -144,6 +144,8 @@ fn status(r: &Installation) -> &'static str {
         } else {
             "待加载"
         }
+    } else if r.waiting_identification() {
+        "已确认 · 待识别"
     } else {
         "已安装"
     }
@@ -174,7 +176,11 @@ impl Desktop {
         let records = self.scoped();
         let pending = records
             .iter()
-            .filter(|r| r.verification == Verification::Pending || r.recovery_required)
+            .filter(|r| {
+                r.verification == Verification::Pending
+                    || r.waiting_identification()
+                    || r.recovery_required
+            })
             .count();
         let mut side = v_flex()
             .w(px(220.))
@@ -528,6 +534,7 @@ impl Desktop {
             .filter(|r| {
                 self.page != Page::Attention
                     || r.verification == Verification::Pending
+                    || r.waiting_identification()
                     || r.recovery_required
             })
             .collect();
@@ -948,7 +955,7 @@ impl Desktop {
             }
         }
         let path = r.install_dir.display().to_string();
-        let copy_path = path.clone();
+
         let source = card()
             .child(
                 div()
@@ -971,13 +978,13 @@ impl Desktop {
                     .ghost()
                     .icon(Lucide::Copy)
                     .label("复制完整路径")
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_path.clone()))
-                    }),
+                    .on_click(cx.listener(|v, _, _, cx| v.copy_installation_path(cx))),
             )
             .child(field(
                 "扩展 ID",
-                r.extension_id.clone().unwrap_or_else(|| "尚未识别".into()),
+                r.extension_id
+                    .clone()
+                    .unwrap_or_else(|| "等待浏览器识别".into()),
             ));
         let mut history = card().child(div().font_weight(FontWeight::SEMIBOLD).child("最近操作"));
         for op in self
