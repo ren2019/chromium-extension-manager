@@ -1,0 +1,29 @@
+name: Rust checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: rust-checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Package macOS development app
+        run: scripts/package-macos.sh debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CEPM-macos-${{ runner.arch }}-debug
+          path: |
+            target/bundle/debug/CEPM-macos-*.zip
+            target/bundle/debug/CEPM-macos-*.zip.sha256
+          if-no-files-found: error

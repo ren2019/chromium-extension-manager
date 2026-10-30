@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/cepm-core", "crates/cepm-app"]
+resolver = "3"
+
+[profile.dev]
+debug = 0
