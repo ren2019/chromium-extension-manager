@@ -347,8 +347,8 @@ impl crate::Manager {
         if record.target.browser != profile.browser {
             return Err("请选择与旧安装一致的浏览器；不支持迁移浏览器数据".into());
         }
-        if record.recovery_required {
-            return Err("此安装需要先恢复，不能重新绑定".into());
+        if record.recovery_required || record.removal.is_some() {
+            return Err("此安装需要先完成恢复或卸载清理，不能重新绑定".into());
         }
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(record.install_dir.join("manifest.json")).map_err(error)?,

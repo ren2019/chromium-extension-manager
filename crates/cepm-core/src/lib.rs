@@ -6,7 +6,9 @@ pub mod presentation;
 pub mod profiles;
 mod releases;
 pub mod remote;
+mod removal;
 mod repository;
+pub use removal::{ManualRemovalConfirmation, RemovalPhase, RemovalState};
 mod updates;
 use fs2::FileExt;
 pub use remote::RemoteOrigin;
@@ -55,6 +57,8 @@ pub struct Installation {
     pub verification: Verification,
     #[serde(default)]
     pub load_failed: bool,
+    #[serde(default)]
+    pub removal: Option<RemovalState>,
     #[serde(default)]
     pub generation: u64,
     #[serde(default)]
@@ -132,6 +136,7 @@ impl Manager {
             _lock: lock,
             recovery_errors: Default::default(),
         };
+        manager.validate_storage_directories()?;
         manager
             .recover_updates()
             .map_err(|e| format!("恢复需要处理：{e}。请保留数据目录并修复后重试"))?;
@@ -185,6 +190,7 @@ impl Manager {
             effective_version: None,
             verification: Verification::Pending,
             load_failed: false,
+            removal: None,
             generation: 1,
             content_digest,
             historical_version: None,

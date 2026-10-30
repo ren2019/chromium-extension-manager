@@ -137,7 +137,9 @@ fn field(label: &str, value: impl Into<SharedString>) -> Div {
         .child(div().flex_1().min_w_0().text_sm().child(value.into()))
 }
 fn status(r: &Installation) -> &'static str {
-    if r.recovery_required {
+    if r.removal.is_some() {
+        "清理未完成"
+    } else if r.recovery_required {
         "恢复需要处理"
     } else if r.load_failed {
         "更新失败"
@@ -181,6 +183,7 @@ impl Desktop {
             .iter()
             .filter(|r| {
                 r.verification == Verification::Pending
+                    || r.removal.is_some()
                     || r.waiting_identification()
                     || r.recovery_required
             })
@@ -547,6 +550,7 @@ impl Desktop {
             .filter(|r| {
                 self.page != Page::Attention
                     || r.verification == Verification::Pending
+                    || r.removal.is_some()
                     || r.waiting_identification()
                     || r.recovery_required
             })
@@ -603,6 +607,7 @@ impl Desktop {
             let pending = r.verification == Verification::Pending;
             let recovery = r.recovery_required;
             let failed = r.load_failed;
+            let removing = r.removal.is_some();
             let check = self.check_outcomes.get(&r.id);
             let update = check.and_then(|c| c.as_ref().ok()).and_then(|v| v.clone());
             let mut info = v_flex()
@@ -666,11 +671,13 @@ impl Desktop {
                             v.open_panel(Panel::Detail, w, cx)
                         })),
                 );
-            if pending || recovery || update.is_some() {
+            if pending || recovery || removing || update.is_some() {
                 row = row.child(
                     Button::new(SharedString::from(format!("next-{action_id}")))
                         .small()
-                        .label(if recovery {
+                        .label(if removing {
+                            "继续清理"
+                        } else if recovery {
                             "处理异常"
                         } else if failed {
                             "处理失败"
@@ -687,7 +694,9 @@ impl Desktop {
                         .on_click(cx.listener(move |v, _, w, cx| {
                             v.selected = Some(action_id.clone());
                             v.open_panel(
-                                if pending && !recovery && !failed {
+                                if removing {
+                                    Panel::Uninstall
+                                } else if pending && !recovery && !failed {
                                     Panel::Guide
                                 } else {
                                     Panel::Detail
@@ -717,7 +726,8 @@ impl Desktop {
             return self.library(cx);
         };
         let pending = r.verification == Verification::Pending;
-        let disabled = self.busy || !self.target_ready() || r.recovery_required;
+        let disabled =
+            self.busy || !self.target_ready() || r.recovery_required || r.removal.is_some();
         let mut hero = h_flex().gap_3().child(self.extension_icon(&r)).child(
             v_flex()
                 .flex_1()
@@ -841,6 +851,17 @@ impl Desktop {
                         .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Restore, w, cx))),
                 )
             });
+        actions = actions.child(
+            Button::new("uninstall")
+                .icon(Lucide::Trash)
+                .label(if r.removal.is_some() {
+                    "继续清理"
+                } else {
+                    "卸载"
+                })
+                .disabled(self.busy)
+                .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Uninstall, w, cx))),
+        );
         let check_text = match self.check_outcomes.get(&r.id) {
             Some(Ok(Some(version))) => format!("有新版本 {version}"),
             Some(Ok(None)) => "没有新版本".into(),

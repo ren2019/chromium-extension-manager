@@ -50,6 +50,7 @@ enum Panel {
     Guide,
     Update,
     Restore,
+    Uninstall,
     Bulk,
 }
 struct Desktop {
@@ -69,6 +70,7 @@ struct Desktop {
     panel: Panel,
     add_step: u8,
     guide_record: Option<Installation>,
+    uninstall_record: Option<Installation>,
     browser_task: Option<cepm_core::browser::BrowserCancellation>,
     browser_task_id: u64,
     path_copied: bool,
@@ -286,6 +288,7 @@ impl Desktop {
             panel: Panel::None,
             add_step: 1,
             guide_record: None,
+            uninstall_record: None,
             browser_task: None,
             browser_task_id: 0,
             path_copied: false,
@@ -358,6 +361,11 @@ impl Desktop {
             return;
         }
         self.panel = panel;
+        self.uninstall_record = if panel == Panel::Uninstall {
+            self.current_record()
+        } else {
+            None
+        };
         self.guide_record = if panel == Panel::Guide {
             self.current_record()
         } else {
@@ -376,6 +384,7 @@ impl Desktop {
         self.cancel_browser_task();
         self.selected = None;
         self.guide_record = None;
+        self.uninstall_record = None;
         self.path_copied = false;
         self.preview = None;
         self.update_plan = None;
@@ -539,6 +548,7 @@ impl Desktop {
                         .map_err(|_| "操作异常，请重启后检查记录".to_string())?;
                     let mut result = operation(&mut m);
                     if let (Some(target), Err(error)) = (&operation_target, &result)
+                        && stage != OperationStage::Uninstall
                         && !(stage == OperationStage::Check && installation_id.is_some())
                         && let Err(log_error) = m.record_operation(
                             target,
@@ -570,6 +580,9 @@ impl Desktop {
                         }
                         if let Some(records) = refreshed {
                             v.records = records;
+                            if v.panel == Panel::Uninstall {
+                                v.uninstall_record = v.current_record();
+                            }
                         }
                         result
                     }
@@ -806,6 +819,44 @@ impl Desktop {
                 v.panel = Panel::Detail;
                 v.guide_record = None;
                 v.status = "已记录更新失败，当前文件与恢复备份保留".into();
+            },
+        );
+    }
+    fn finish_manual_removal(&mut self, cx: &mut Context<Self>) {
+        let Some(record) = self.uninstall_record.clone() else {
+            return;
+        };
+        let Some(profile) = self.target() else {
+            return;
+        };
+        if record.removal.is_none() && !self.checked {
+            self.message(Err("请先在浏览器移除，再勾选确认".into()), "", cx);
+            return;
+        }
+        self.work(
+            "正在清理本安装的受管文件…",
+            OperationStage::Uninstall,
+            cx,
+            move |m| {
+                if record.removal.is_some() {
+                    m.retry_removal(&record.id, &profile.target(), record.generation)?;
+                } else {
+                    m.confirm_manual_removal(
+                        &record.id,
+                        &profile.target(),
+                        record.generation,
+                        cepm_core::ManualRemovalConfirmation::Removed,
+                    )?;
+                }
+                m.list()
+            },
+            |v, records| {
+                v.records = records;
+                v.selected = None;
+                v.uninstall_record = None;
+                v.panel = Panel::None;
+                v.page = Page::Library;
+                v.status = "已完成卸载清理".into();
             },
         );
     }
@@ -1615,6 +1666,42 @@ impl Desktop {
                             });
                 }
             }
+            Panel::Uninstall => {
+                if let Some(record) = &self.uninstall_record {
+                    let retry = record.removal.is_some();
+                    content = content.gap_3()
+                        .child(heading(record.name.clone()))
+                        .child(caption(self.target_label()))
+                        .child(caption(if retry {
+                            "浏览器移除已经确认。继续清理这份安装的受管文件、备份及记录，无需再次移除浏览器扩展。"
+                        } else {
+                            "请先在这个浏览器配置中移除扩展。浏览器可能同时删除扩展保存的数据。确认移除后，仅清理本安装的受管文件、备份和记录。"
+                        }))
+                        .when(!retry, |d| d
+                            .child(h_flex().child(Button::new("uninstall-native").ghost()
+                                .icon(gpui_kit::assets::IconName::ExternalLink).label("浏览器扩展管理")
+                                .disabled(disabled || !self.target_ready())
+                                .on_click(cx.listener(|v, _, _, cx| v.open_native(cx)))))
+                            .child(Checkbox::new("removed-confirmation").label("我已在此配置中移除这个扩展")
+                                .checked(self.checked).disabled(disabled)
+                                .on_click(cx.listener(|v, value, _, cx| { v.checked = *value; cx.notify(); }))))
+                        .when_some(record.removal.as_ref().and_then(|s| s.error()).map(str::to_owned), |d, error| d.child(caption(error)))
+                        .child(h_flex().gap_2().justify_between()
+                            .child(Button::new("cancel-uninstall").ghost().label("取消").disabled(disabled)
+                                .on_click(cx.listener(|v, _, _, cx| { v.panel = Panel::Detail; v.uninstall_record = None; v.checked = false; cx.notify(); })))
+                            .child(Button::new("finish-uninstall").primary()
+                                .label(if retry { "重试清理" } else { "确认移除并清理" })
+                                .disabled(disabled || (!retry && !self.checked))
+                                .on_click(cx.listener(|v, _, _, cx| v.finish_manual_removal(cx)))))
+                        .when(!retry, |d| d.child(h_flex().child(Button::new("uninstall-help").ghost().small()
+                            .label(if self.show_technical { "收起帮助" } else { "没有打开管理页？" })
+                            .on_click(cx.listener(|v, _, _, cx| { v.show_technical = !v.show_technical; cx.notify(); })))))
+                        .when(!retry && (self.error || self.show_technical), |d| d
+                            .child(caption(format!("也可在目标窗口手动打开 {}，移除后回来确认。", self.target().map(|p| p.management_url()).unwrap_or("edge://extensions"))))
+                            .child(h_flex().child(Button::new("uninstall-copy-url").label("复制管理页地址")
+                                .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))))));
+                }
+            }
             Panel::Update => {
                 if let (Some(r), Some(plan)) = (self.current_record(), &self.update_plan) {
                     let kind = match plan.kind() {
@@ -1775,6 +1862,7 @@ impl Render for Desktop {
             }
             Panel::Update => "确认版本变更",
             Panel::Restore => "恢复旧文件",
+            Panel::Uninstall => "卸载扩展",
             Panel::Bulk => "当前配置的更新",
             Panel::None => "",
         };
@@ -1836,7 +1924,7 @@ impl Render for Desktop {
                         .top(px(36.))
                         .bottom_0()
                         .right_0()
-                        .left(if panel == Panel::Guide {
+                        .left(if matches!(panel, Panel::Guide | Panel::Uninstall) {
                             px(220.)
                         } else {
                             px(0.)
@@ -1893,7 +1981,7 @@ impl Render for Desktop {
                                             .child(self.status.clone()),
                                     )
                                 })
-                                .when(panel != Panel::Guide, |d| {
+                                .when(!matches!(panel, Panel::Guide | Panel::Uninstall), |d| {
                                     d.child(
                                         h_flex()
                                             .justify_between()

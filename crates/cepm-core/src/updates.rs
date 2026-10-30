@@ -417,6 +417,13 @@ impl Manager {
             if !uuid::Uuid::parse_str(&id).is_ok_and(|parsed| parsed.to_string() == id) {
                 return Err("更新日志目录身份无效，请保留数据目录并检查".into());
             }
+            if self
+                .read_records()?
+                .iter()
+                .any(|r| r.id == id && r.removal.is_some())
+            {
+                continue;
+            }
             let result = (|| {
                 let mut journal = self.read_journal(&transaction)?;
                 if journal.repair.is_some() {
@@ -452,6 +459,9 @@ impl Manager {
     }
 
     pub(super) fn mark_recovery_state(&self, record: &mut Installation) {
+        if record.removal.is_some() {
+            return;
+        }
         let transaction = self.transaction_path(&record.id);
         let error = self.recovery_errors.get(&record.id).cloned().or_else(|| {
             if !transaction.exists() {
@@ -592,6 +602,9 @@ impl Manager {
             .into_iter()
             .find(|r| r.id == id)
             .ok_or("找不到该安装记录，请重新选择")?;
+        if record.removal.is_some() {
+            return Err("此安装已确认浏览器移除，请先完成受管文件清理".into());
+        }
         if record.recovery_required {
             return Err(record.last_operation);
         }
