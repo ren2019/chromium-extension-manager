@@ -11,6 +11,7 @@ pub enum OperationStage {
     Confirm,
     Recover,
     Bind,
+    Uninstall,
 }
 impl OperationStage {
     pub fn label(self) -> &'static str {
@@ -21,6 +22,7 @@ impl OperationStage {
             Self::Confirm => "核对生效",
             Self::Recover => "恢复文件",
             Self::Bind => "定位配置",
+            Self::Uninstall => "卸载清理",
         }
     }
 }
@@ -48,6 +50,8 @@ pub struct OperationRecord {
     pub status: OperationStatus,
     pub reason: String,
     pub next_step: String,
+    #[serde(default)]
+    pub operation_id: Option<String>,
 }
 impl Manager {
     /// One source dispatch for single and bulk checks; failure never changes installation state.
@@ -120,7 +124,32 @@ impl Manager {
             status,
             reason: reason.into(),
             next_step: next_step.into(),
+            operation_id: None,
         });
+        self.save_history(history)
+    }
+    pub(crate) fn record_removal_cleanup(&self, record: &crate::Installation) -> Result<()> {
+        let state = record.removal.as_ref().ok_or("浏览器移除尚未确认")?;
+        let mut history = self.read_operations()?;
+        if history
+            .iter()
+            .any(|event| event.operation_id.as_deref() == Some(&state.operation_id))
+        {
+            return Ok(());
+        }
+        history.push(OperationRecord {
+            target: record.target.clone(),
+            installation_id: Some(record.id.clone()),
+            at: crate::updates::now(),
+            stage: OperationStage::Uninstall,
+            status: OperationStatus::Succeeded,
+            reason: "用户确认浏览器已移除；受管文件已清理".into(),
+            next_step: "管理记录移除失败时可重试清理，无需重复浏览器操作".into(),
+            operation_id: Some(state.operation_id.clone()),
+        });
+        self.save_history(history)
+    }
+    fn save_history(&self, mut history: Vec<OperationRecord>) -> Result<()> {
         if history.len() > 100 {
             history.drain(..history.len() - 100);
         }
