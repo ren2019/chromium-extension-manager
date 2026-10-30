@@ -47,6 +47,28 @@
 - [检查失败与无需更新并存](spec10-images/16-mixed-check.png)
 - [部署与跳过分别反馈](spec10-images/16-batch-result.png)
 
+## 最终修复与本机安装包复验
+
+最终代码 `7548e6f`，已按正常打包脚本生成 Apple Silicon debug 包，并替换 `/Applications/CEPM.app`。原程序副本保留在本机临时验收目录以便回退。安装后二进制与生成包 SHA-256 均为 `940c60e339e8844adfb87de483cda284e78314f7db7a417819f0619cd0a74f0c`。
+
+- 更新后的实际应用成功打开既有数据；全称、Logo、OpenCLI 自身图标、全页详情、折叠的两配置对照及关于页正常。
+- 在独立测试数据再次打开恢复对话框，详情仍在背景；Escape 返回原详情，未执行恢复。
+- 再次制造临时目录权限错误：卸载清理错误只显示一次，详情保留“清理未完成”；恢复权限重试成功，列表数量减少，历史仍显示已移除扩展的完整名称及此前事件。
+- GitHub Release 原生预览从 `jackwener/OpenCLI` 获取 `v2.0.2`，正确解析附件的扩展版本 `1.0.26`；关闭预览不部署。
+- 更新本机程序前后，两份日常受管安装（Edge / Chrome）的记录与全部安装文件哈希逐一相同。本次未卸载、重装、重启日常浏览器，也未开启日常调试连接。
+- 四项规格审查问题修复后已做针对性复审，无遗留代码问题；规范审查的两项维护建议已修复。见 [审查记录](spec10-review.md)。
+
+截图：
+
+- [旧版原生界面](spec10-images/00-installed-before.png)
+- [安装后的扩展库](spec10-images/17-installed-library.png)
+- [安装后的真实详情](spec10-images/17-installed-detail.png)
+- [安装后的关于页](spec10-images/17-installed-about.png)
+- [保留详情背景的恢复确认](spec10-images/17-restore-dialog-final.png)
+- [最终清理失败提示](spec10-images/17-cleanup-error-final.png)
+- [卸载后可辨认的历史](spec10-images/17-uninstall-history-final.png)
+- [官方 Release 预览](spec10-images/16-release-preview.png)
+
 ## 尚待最终验收
 
-Edge 授权核对与卸载、受控真实浏览器持久性、用户指定 Edge OpenCLI 卸载重装、本机最终包更新尚在实施中。本记录不将代码测试或界面确认代替这些验证。
+Edge 授权核对与卸载、受控真实浏览器持久性、用户指定 Edge OpenCLI 卸载重装及功能连接仍待执行；日常浏览器退出/调试授权/卸载的行动前确认尚未收到。自动浏览器写入默认保持关闭，PR 保持草稿。本记录不将代码测试或界面确认代替这些验证。
