@@ -1394,7 +1394,6 @@ impl Desktop {
                         v_flex()
                             .gap_1()
                             .child(heading(r.name.clone()))
-                            .child(self.browser_verification_controls(cx))
                             .child(caption(format!(
                                 "旧标签：{:?} / {} · 文件 {}",
                                 r.target.browser, r.target.profile, r.installed_version

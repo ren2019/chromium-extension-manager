@@ -391,3 +391,29 @@ fn authorization_and_native_version_page_can_be_slow_without_flaking_connection(
     );
     server.join().unwrap();
 }
+
+#[test]
+fn automatic_recheck_clears_reported_failure_without_changing_files() {
+    let root = tempfile::tempdir().unwrap();
+    let profile = profile(&root);
+    let (mut manager, record) = install(&root, &profile);
+    let failed = manager
+        .report_browser_failure(&record.id, &profile.target(), record.generation)
+        .unwrap();
+    assert!(failed.load_failed);
+    let server = serve(
+        &profile,
+        json!([{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","path":record.install_dir,"version":"1.0.0","enabled":true}]),
+        None,
+    );
+    let mut session = EdgeSession::connect(&profile, BrowserCancellation::default()).unwrap();
+    let evidence = session.verify(&failed).unwrap();
+    drop(session);
+    let result = manager
+        .confirm_browser(evidence, &profile.target())
+        .unwrap();
+    assert!(!result.load_failed);
+    assert_eq!(result.installed_version, "1.0.0");
+    assert_eq!(result.updated_at, record.updated_at);
+    server.join().unwrap();
+}
