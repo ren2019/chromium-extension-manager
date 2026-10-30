@@ -1,4 +1,5 @@
 //! Installation use cases, independent of the desktop UI.
+pub mod browser;
 pub mod bulk;
 pub mod operations;
 pub mod presentation;
@@ -38,6 +39,7 @@ pub struct Target {
 pub enum Verification {
     Pending,
     UserConfirmed,
+    Automatic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

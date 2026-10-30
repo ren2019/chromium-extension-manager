@@ -1,3 +1,6 @@
+mod browser_connection;
+mod keyboard;
+use gpui_kit::base::FocusTrapElement;
 mod visual;
 use cepm_core::RemoteOrigin;
 use cepm_core::bulk::{BulkResult, BulkStatus, CheckedUpdate};
@@ -51,6 +54,7 @@ enum Panel {
     Bulk,
 }
 struct Desktop {
+    keyboard: keyboard::Keyboard,
     manager: Option<Arc<Mutex<Manager>>>,
     profiles: Option<ProfileBook>,
     candidates: Vec<ProfileCandidate>,
@@ -67,6 +71,8 @@ struct Desktop {
     add_step: u8,
     guide_record: Option<Installation>,
     uninstall_record: Option<Installation>,
+    browser_task: Option<cepm_core::browser::BrowserCancellation>,
+    browser_task_id: u64,
     path_copied: bool,
     source_kind: SourceKind,
     source_update_id: Option<String>,
@@ -266,6 +272,7 @@ impl Desktop {
         let artwork = load_artwork(manager.as_ref(), &records);
         let error = !status.is_empty();
         Self {
+            keyboard: keyboard::Keyboard::new(window, cx),
             manager,
             profiles,
             candidates,
@@ -282,6 +289,8 @@ impl Desktop {
             add_step: 1,
             guide_record: None,
             uninstall_record: None,
+            browser_task: None,
+            browser_task_id: 0,
             path_copied: false,
             source_kind: SourceKind::Local,
             source_update_id: None,
@@ -345,6 +354,9 @@ impl Desktop {
         cx.notify();
     }
     fn open_panel(&mut self, panel: Panel, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.browser_task.is_some() {
+            self.cancel_browser_task();
+        }
         if self.busy {
             return;
         }
@@ -369,6 +381,7 @@ impl Desktop {
         cx.notify();
     }
     fn clear_target_work(&mut self) {
+        self.cancel_browser_task();
         self.selected = None;
         self.guide_record = None;
         self.uninstall_record = None;
@@ -398,6 +411,9 @@ impl Desktop {
         Ok(())
     }
     fn select_profile(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.browser_task.is_some() {
+            self.cancel_browser_task();
+        }
         if self.busy {
             return;
         }
@@ -1549,6 +1565,7 @@ impl Desktop {
                                         .on_click(cx.listener(|v, _, _, cx| v.open_native(cx))),
                                 ),
                             )
+                            .child(self.browser_verification_controls(cx))
                             .when(first_load, |v| {
                                 v.child(
                                     gpui_kit::component::text::TextView::html(
@@ -1818,8 +1835,19 @@ impl Desktop {
     }
 }
 impl Render for Desktop {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let panel = self.panel;
+        self.keyboard.sync(
+            if self.switcher {
+                1
+            } else if panel != Panel::None && panel != Panel::Detail {
+                2
+            } else {
+                0
+            },
+            window,
+            cx,
+        );
         let title = match panel {
             Panel::Bind => "浏览器配置",
             Panel::Legacy => "定位旧安装",
@@ -1839,7 +1867,14 @@ impl Render for Desktop {
             Panel::None => "",
         };
         v_flex()
+            .id("desktop-focus")
+            .tab_group()
+            .track_focus(&self.keyboard.root)
+            .tab_stop(false)
             .on_key_down(cx.listener(|v, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && v.browser_task.is_some() {
+                    v.cancel_browser_task();
+                }
                 if event.keystroke.key == "escape" && !v.busy {
                     v.switcher = false;
                     if v.panel != Panel::Detail {
@@ -1882,6 +1917,9 @@ impl Render for Desktop {
             .when(panel != Panel::None && panel != Panel::Detail, |root| {
                 root.child(
                     div()
+                        .id("task-modal-focus")
+                        .track_focus(&self.keyboard.overlay)
+                        .tab_stop(false)
                         .absolute()
                         .top(px(36.))
                         .bottom_0()
@@ -1915,8 +1953,9 @@ impl Render for Desktop {
                                                 .icon(gpui_kit::assets::IconName::X)
                                                 .tooltip("关闭")
                                                 .accessibility_label("关闭")
-                                                .disabled(self.busy)
+                                                .disabled(self.busy && self.browser_task.is_none())
                                                 .on_click(cx.listener(|v, _, _, cx| {
+                                                    v.cancel_browser_task();
                                                     v.panel = Panel::None;
                                                     v.preview = None;
                                                     cx.notify();
@@ -1953,15 +1992,19 @@ impl Render for Desktop {
                                             .child(
                                                 Button::new("later")
                                                     .label("关闭")
-                                                    .disabled(self.busy)
+                                                    .disabled(
+                                                        self.busy && self.browser_task.is_none(),
+                                                    )
                                                     .on_click(cx.listener(|v, _, _, cx| {
+                                                        v.cancel_browser_task();
                                                         v.panel = Panel::None;
                                                         cx.notify();
                                                     })),
                                             ),
                                     )
                                 }),
-                        ),
+                        )
+                        .focus_trap("task-modal-trap", &self.keyboard.overlay),
                 )
             })
     }

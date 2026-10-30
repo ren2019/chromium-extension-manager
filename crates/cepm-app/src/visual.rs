@@ -27,6 +27,7 @@ pub(super) fn apply_theme(cx: &mut App) {
         theme.colors.foreground = rgb(0x1a1a1d).into();
         theme.colors.muted_foreground = rgb(MUTED).into();
         theme.colors.border = rgb(BORDER).into();
+        theme.colors.ring = rgb(0x3b82f6).into();
         theme.colors.secondary_active = rgb(0xe1e8fb).into();
         theme.colors.primary = rgb(GREEN).into();
         theme.colors.primary_foreground = rgb(0xffffff).into();
@@ -215,13 +216,14 @@ impl Desktop {
         side = side
             .child(
                 Button::new("profile-switcher")
+                    .track_focus(&self.keyboard.profile)
                     .accessibility_label(format!("切换配置：{}", self.target_label()))
                     .tooltip(self.target_label())
                     .min_w_0()
                     .w_full()
                     .h(px(58.))
                     .child(switch.child(icon(Lucide::ChevronsUpDown)))
-                    .disabled(self.busy)
+                    .disabled(self.busy && self.browser_task.is_none())
                     .on_click(cx.listener(|v, _, _, cx| {
                         v.switcher = !v.switcher;
                         cx.notify();
@@ -266,8 +268,9 @@ impl Desktop {
                     .h(px(36.))
                     .child(label)
                     .selected(self.page == page)
-                    .disabled(self.busy)
+                    .disabled(self.busy && self.browser_task.is_none())
                     .on_click(cx.listener(move |v, _, _, cx| {
+                        v.cancel_browser_task();
                         v.page = page;
                         v.panel = Panel::None;
                         v.selected = None;
@@ -304,6 +307,8 @@ impl Desktop {
     pub(super) fn profile_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut menu = v_flex()
             .id("profile-menu")
+            .track_focus(&self.keyboard.overlay)
+            .tab_stop(false)
             .w(px(310.))
             .max_h(px(440.))
             .overflow_y_scroll()
@@ -394,7 +399,13 @@ impl Desktop {
                     cx.notify();
                 }),
             ))
-            .child(div().absolute().left(px(12.)).top(px(108.)).child(menu))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(12.))
+                    .top(px(108.))
+                    .child(menu.focus_trap("profile-menu-trap", &self.keyboard.overlay)),
+            )
             .into_any_element()
     }
     fn notice(&self) -> Div {
@@ -766,6 +777,18 @@ impl Desktop {
                     .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Guide, w, cx))),
             );
         }
+        if self.target().is_some_and(|p| p.browser == Browser::Edge) {
+            actions = actions.child(
+                Button::new("detail-browser-verify")
+                    .label(if r.waiting_identification() {
+                        "识别扩展"
+                    } else {
+                        "自动核对"
+                    })
+                    .disabled(disabled)
+                    .on_click(cx.listener(|v, _, w, cx| v.open_panel(Panel::Guide, w, cx))),
+            );
+        }
         actions = actions
             .child(
                 Button::new("check-update")
@@ -877,6 +900,8 @@ impl Desktop {
                 "确认方式",
                 if pending {
                     "等待浏览器核对"
+                } else if r.verification == Verification::Automatic {
+                    "浏览器自动核对"
                 } else {
                     "用户已确认"
                 },
