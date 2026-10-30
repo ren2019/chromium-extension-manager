@@ -86,7 +86,11 @@ impl Manager {
             Ok(()) => (
                 OperationStatus::Succeeded,
                 "操作已完成",
-                "磁盘变更仍需在目标浏览器重载并核对",
+                match stage {
+                    OperationStage::Confirm => "浏览器生效版本已确认",
+                    OperationStage::Check => "可在扩展详情中查看检查结果",
+                    _ => "磁盘变更仍需在目标浏览器重载并核对",
+                },
             ),
             Err(error) => {
                 let (reason, next_step) = diagnosis(error);
@@ -201,6 +205,17 @@ impl Manager {
             .rev()
             .filter(|r| &r.target == target)
             .map(|mut event| {
+                // Correct legacy generic guidance only in the read projection;
+                // retain audit bytes, custom text and unsuccessful outcomes.
+                if event.status == OperationStatus::Succeeded
+                    && event.next_step == "磁盘变更仍需在目标浏览器重载并核对"
+                {
+                    match event.stage {
+                        OperationStage::Confirm => event.next_step = "浏览器生效版本已确认".into(),
+                        OperationStage::Check => event.next_step = "可在扩展详情中查看检查结果".into(),
+                        _ => {}
+                    }
+                }
                 // Deleting the final record is the commit point. Project completion
                 // from absence so a crash cannot lose an audit update after deletion.
                 if event.stage == OperationStage::Uninstall
