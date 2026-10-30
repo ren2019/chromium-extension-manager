@@ -30,6 +30,7 @@ class ReleaseMetadataTest(unittest.TestCase):
         (self.root / "Cargo.toml").write_text(
             f'[package]\nname = "cepm-app"\nversion = "{value}"\nedition = "2024"\n'
         )
+        subprocess.run(["cargo", "generate-lockfile", "--offline"], cwd=self.root, check=True, capture_output=True)
 
     def run_gate(self, ref):
         return subprocess.run(
@@ -68,6 +69,15 @@ class ReleaseMetadataTest(unittest.TestCase):
         result = self.run_gate("refs/tags/v0.2.0-rc.1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("prerelease=true\n", result.stdout)
+
+    def test_version_inspection_does_not_rewrite_lockfile(self):
+        lock = (self.root / "Cargo.lock").read_bytes()
+        manifest = self.root / "Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('"0.1.0"', '"0.1.1"'))
+        result = self.run_gate("refs/heads/main")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("version=0.1.1\n", result.stdout)
+        self.assertEqual((self.root / "Cargo.lock").read_bytes(), lock)
 
 
 if __name__ == "__main__":

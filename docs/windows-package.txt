@@ -3,7 +3,7 @@ Chromium Extension Package Manager (CEPM)
 Extract the whole ZIP, then run CEPM.exe. This is an unsigned portable x64
 Windows build. Native Windows GUI and browser workflows have not been validated.
 If Windows reports a missing VCRUNTIME/MSVCP DLL, install Microsoft's official
-Visual C++ x64 Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe
+Visual C++ x64 Redistributable: https://aka.ms/vc14/vc_redist.x64.exe
 Do not download individual DLLs from third-party sites.
 
 GitHub sources require GitHub CLI (gh) installed and authenticated separately.

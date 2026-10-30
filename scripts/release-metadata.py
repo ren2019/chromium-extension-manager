@@ -10,7 +10,7 @@ def main():
     import json
 
     metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--no-deps", "--format-version", "1"], text=True
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], text=True
     ))
     version = next(p["version"] for p in metadata["packages"] if p["name"] == "cepm-app")
     # Stable versions and ordinary SemVer prereleases; no ambiguous leading zeros.
