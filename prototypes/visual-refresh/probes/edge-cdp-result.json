@@ -1,0 +1,96 @@
+{
+  "root": "<scratch>",
+  "observations": [
+    {
+      "label": "version",
+      "response": {
+        "id": 1,
+        "result": {
+          "protocolVersion": "1.3",
+          "product": "Edg/156.0.4314.50",
+          "revision": "@af2ba23ae0ecf7084d900446fc59d5119dd5fd5e",
+          "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+          "jsVersion": "15.6.12.7"
+        }
+      }
+    },
+    {
+      "label": "list without unsafe flag",
+      "response": {
+        "id": 2,
+        "result": {
+          "extensions": []
+        }
+      }
+    },
+    {
+      "label": "load without unsafe flag",
+      "response": {
+        "id": 3,
+        "result": {
+          "id": "jhhdfncgepjldmjpaimofnhbknaldggf"
+        }
+      }
+    },
+    {
+      "label": "list after load",
+      "response": {
+        "id": 4,
+        "result": {
+          "extensions": [
+            {
+              "id": "jhhdfncgepjldmjpaimofnhbknaldggf",
+              "name": "CEPM disposable probe",
+              "version": "1.0.0",
+              "path": "<scratch>/fixture",
+              "enabled": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "label": "list after complete restart",
+      "response": {
+        "id": 6,
+        "result": {
+          "extensions": []
+        }
+      }
+    },
+    {
+      "label": "load again",
+      "response": {
+        "id": 7,
+        "result": {
+          "id": "jhhdfncgepjldmjpaimofnhbknaldggf"
+        }
+      }
+    },
+    {
+      "label": "uninstall fixture",
+      "response": {
+        "id": 8,
+        "result": {}
+      }
+    },
+    {
+      "label": "list after uninstall",
+      "response": {
+        "id": 9,
+        "result": {
+          "extensions": []
+        }
+      }
+    },
+    {
+      "label": "list after uninstall + restart",
+      "response": {
+        "id": 11,
+        "result": {
+          "extensions": []
+        }
+      }
+    }
+  ]
+}

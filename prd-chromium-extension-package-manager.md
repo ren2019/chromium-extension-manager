@@ -3,6 +3,7 @@
 - 文档状态：v0.5（用户批准 A 原型与浏览器/Profile 操作范围）
 - 日期：2026-10-29
 - 产品暂名：Chromium Extension Package Manager（CEPM）
+- 主要使用浏览器：Microsoft Edge（2026-10-30 用户追加）；Windows/macOS 和 Chrome 支持目标保留。
 - 首个验收案例：jackwener/OpenCLI Browser Bridge
 - 目标平台：Windows 和 macOS；Microsoft Edge、Google Chrome 及兼容的 Chromium 浏览器
 
@@ -247,7 +248,7 @@
 ### 10.4 兼容性
 
 - MVP 支持 Windows 和 macOS；
-- Chrome/macOS 已完成最小实验；按用户决定不再补做 Windows/Edge 验证，支持目标保留，未测行为不声明已验证兼容；
+- Chrome/macOS 已完成最小实验；此前停止 Windows/Edge 专项验证；2026-10-30 用户恢复 Edge 按需连接的最小验证（见 `docs/validation/edge-cdp.md`），Windows 专项仍未恢复，未测行为不声明已验证兼容；
 - 浏览器不支持自动加载时，必须保留手动降级路径；
 - 扩展须为无需源码构建即可加载的 Manifest V3 产物。
 
@@ -371,3 +372,7 @@ OpenCLI 的 CLI、OpenCLIApp 和命令插件属于独立组件，不在本 PRD �
 - **批量更新**：每个扩展独立备份、执行和报告结果，单个失败不撤销其他已成功更新。
 - **失败恢复**：新版明确加载失败时自动恢复旧版文件并重新验证；无法读取状态不等于失败。文件恢复不保证撤销扩展已执行的数据迁移。
 - **实现原则**：避免过度设计，以少量模块和必要验证完成首版；不因参考项目而引入常驻服务、复杂插件体系或大批预设 AST 规则。
+
+## 18. Edge 按需连接追加决定（2026-10-30）
+
+用户主要使用 Edge，并授权重新验证必要的 Edge 操作能力。按需连接、元数据自动核对和受管扩展卸载纳入后续界面工作；手动流程仅在能力不足时兜底。实测 `loadUnpacked` 的安装不跨重启，持久安装要求不变。具体边界与未验收项见 [Edge 验证](docs/validation/edge-cdp.md)及 GitHub #10；不将已连接等同于所有 Profile 可安全操作。任务结束断开 APP 连接，不承诺浏览器调试开关重启后自动关闭。此次是对原先停止 Edge 验证的定向更新，Windows 范围不扩张。
