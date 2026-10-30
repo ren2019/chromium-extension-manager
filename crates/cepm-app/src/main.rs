@@ -71,6 +71,7 @@ struct Desktop {
     add_step: u8,
     guide_record: Option<Installation>,
     uninstall_record: Option<Installation>,
+    uninstall_manual: bool,
     browser_task: Option<cepm_core::browser::BrowserCancellation>,
     browser_task_id: u64,
     path_copied: bool,
@@ -289,6 +290,7 @@ impl Desktop {
             add_step: 1,
             guide_record: None,
             uninstall_record: None,
+            uninstall_manual: false,
             browser_task: None,
             browser_task_id: 0,
             path_copied: false,
@@ -361,6 +363,11 @@ impl Desktop {
             return;
         }
         self.panel = panel;
+        self.uninstall_manual = !cepm_core::browser::automatic_uninstall_enabled()
+            || self.target().is_none_or(|p| p.browser != Browser::Edge)
+            || self
+                .current_record()
+                .is_none_or(|r| r.extension_id.is_none());
         self.uninstall_record = if panel == Panel::Uninstall {
             self.current_record()
         } else {
@@ -1667,40 +1674,7 @@ impl Desktop {
                 }
             }
             Panel::Uninstall => {
-                if let Some(record) = &self.uninstall_record {
-                    let retry = record.removal.is_some();
-                    content = content.gap_3()
-                        .child(heading(record.name.clone()))
-                        .child(caption(self.target_label()))
-                        .child(caption(if retry {
-                            "浏览器移除已经确认。继续清理这份安装的受管文件、备份及记录，无需再次移除浏览器扩展。"
-                        } else {
-                            "请先在这个浏览器配置中移除扩展。浏览器可能同时删除扩展保存的数据。确认移除后，仅清理本安装的受管文件、备份和记录。"
-                        }))
-                        .when(!retry, |d| d
-                            .child(h_flex().child(Button::new("uninstall-native").ghost()
-                                .icon(gpui_kit::assets::IconName::ExternalLink).label("浏览器扩展管理")
-                                .disabled(disabled || !self.target_ready())
-                                .on_click(cx.listener(|v, _, _, cx| v.open_native(cx)))))
-                            .child(Checkbox::new("removed-confirmation").label("我已在此配置中移除这个扩展")
-                                .checked(self.checked).disabled(disabled)
-                                .on_click(cx.listener(|v, value, _, cx| { v.checked = *value; cx.notify(); }))))
-                        .when_some(record.removal.as_ref().and_then(|s| s.error()).map(str::to_owned), |d, error| d.child(caption(error)))
-                        .child(h_flex().gap_2().justify_between()
-                            .child(Button::new("cancel-uninstall").ghost().label("取消").disabled(disabled)
-                                .on_click(cx.listener(|v, _, _, cx| { v.panel = Panel::Detail; v.uninstall_record = None; v.checked = false; cx.notify(); })))
-                            .child(Button::new("finish-uninstall").primary()
-                                .label(if retry { "重试清理" } else { "确认移除并清理" })
-                                .disabled(disabled || (!retry && !self.checked))
-                                .on_click(cx.listener(|v, _, _, cx| v.finish_manual_removal(cx)))))
-                        .when(!retry, |d| d.child(h_flex().child(Button::new("uninstall-help").ghost().small()
-                            .label(if self.show_technical { "收起帮助" } else { "没有打开管理页？" })
-                            .on_click(cx.listener(|v, _, _, cx| { v.show_technical = !v.show_technical; cx.notify(); })))))
-                        .when(!retry && (self.error || self.show_technical), |d| d
-                            .child(caption(format!("也可在目标窗口手动打开 {}，移除后回来确认。", self.target().map(|p| p.management_url()).unwrap_or("edge://extensions"))))
-                            .child(h_flex().child(Button::new("uninstall-copy-url").label("复制管理页地址")
-                                .on_click(cx.listener(|v, _, _, cx| v.copy_management_url(cx))))));
-                }
+                content = content.child(self.uninstall_content(cx));
             }
             Panel::Update => {
                 if let (Some(r), Some(plan)) = (self.current_record(), &self.update_plan) {
