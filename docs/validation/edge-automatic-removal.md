@@ -2,9 +2,20 @@
 
 ## Delivery state
 
-The implementation is available for controlled acceptance; **real UI-persisted installation/removal and final native acceptance have not been completed by the implementing agent**. Normal/default builds keep automatic browser writes disabled. No existing personal browser extension was modified while implementing this ticket.
+The integration owner completed the isolated real-browser acceptance on macOS Edge **156.0.4314.50**. The application now enables `edge-uninstall` by default, so normal packaging includes the validated adapter. `cepm-core` keeps the feature off by default; the runtime still refuses automatic removal outside that exact macOS Edge build or in shared multi-Profile roots. Other cases retain the manual flow.
 
-The small `edge-uninstall` Cargo feature is opt-in, is forwarded by `cepm-app`, and additionally permits only macOS Edge **156.0.4314.50**. This build number is a test candidate from earlier metadata/temporary-load evidence, not a claim that persistent removal has passed. Other versions or shared multi-Profile roots use the manual flow. Parent integration must record real evidence before enabling this feature by default or changing the verified version restriction.
+**The user's daily OpenCLI uninstall/reinstall and persistence/functional validation is still pending.** This activation change is prepared for integration after that acceptance; it does not claim the daily cycle has passed.
+
+## Isolated real-browser evidence
+
+The integration owner reported these completed production-path checks:
+
+- Native Edge UI loaded the fixture from its fixed directory; it remained installed after Edge restarted.
+- Native CEPM performed automatic removal with the opt-in build, verified absence, and cleaned its owned installation. Edge restart still showed the fixture absent.
+- A separate browser root B retained its exact extension ID/path, version `1.0.0` and enabled state. Its CEPM record and file hashes remained unchanged.
+- A real launch created `Profile 1` alongside the existing Profile in root B. The production removal path rejected the shared root before writing.
+
+These results establish the narrow tested-build capability. They do not establish arbitrary shared-Profile routing, other Edge releases or Windows behavior. Earlier automated checks remain separate from this real-browser evidence.
 
 ## Production behavior
 
@@ -21,7 +32,7 @@ The UI supports cancellation and target navigation; stale results cannot act on 
 Tests exercise the public Manager use case with real temporary managed directories and a local WebSocket server at the external protocol boundary:
 
 - selected installation removed, source and other Profile installation retained, automatic history preserved;
-- default build refuses the write even with a successful metadata connection;
+- standalone core builds without the feature refuse the write even with a successful metadata connection;
 - unsupported Edge version, denied write, failed or malformed readback and still-present extension retain files/record;
 - missing ID, wrong target, stale generation, cancelled task, no confirmation, newly shared root and wrong browser ID never write;
 - cancellation after the request does not claim verified absence or clean files;
@@ -29,15 +40,15 @@ Tests exercise the public Manager use case with real temporary managed directori
 
 The malformed-readback test first failed because an incomplete entry could look absent; the implementation now requires complete metadata before cleanup authorization. These are transport/core checks, not substitutes for real-browser persistence or native screenshots.
 
-## Controlled acceptance commands
+## Build and diagnostic commands
 
-Build the native test application explicitly:
+Normal application builds and packaging include the tested adapter:
 
 ```
-cargo build -p cepm-app --features edge-uninstall
+cargo build -p cepm-app
 ```
 
-The existing packaging script rebuilds without feature arguments; **do not assume it preserves an earlier opt-in binary**. Use the directly built native executable during controlled validation. After recorded runtime success, an explicit final change can enable the feature in the application's default features and use normal packaging, retaining the exact tested-build restriction.
+For a manual-only application build, use `cargo build -p cepm-app --no-default-features`. The standalone core diagnostic runner still requires explicit feature activation; the exact tested-build restriction applies in either case.
 
 A one-shot runner uses the identical production use case (close the CEPM application first for file locks):
 
@@ -47,8 +58,8 @@ cargo run -p cepm-core --features edge-uninstall --example uninstall_edge -- <CE
 
 This is destructive to the specified extension and its owned files; use only the explicitly authorized disposable fixture or user-authorized target. Browser approval and precise binding still apply. Read-only identity preparation remains `--example verify_edge`.
 
-## Remaining acceptance / activation gate
+## Remaining daily acceptance
 
-Integration owner must perform and record: real Edge UI load → restart persistence → production automatic removal → absence and restart absence; exact target/other-root isolation; two regular Profiles in one root rejected without writing; native automatic/manual flows and cleanup retry; then the user's expressly requested OpenCLI uninstall/reinstall and persistence/functional check. The new final user request authorizes that specific OpenCLI cycle, but the app still needs browser authorization and any separately required restart permission.
+The integration owner must complete and record the user's expressly requested daily OpenCLI uninstall/reinstall, restart persistence and functional check before merging this activation. The request authorizes that specific cycle; browser authorization and separately required restart permission still apply. Isolated native acceptance above does not substitute for that daily result.
 
 Shared-root arbitrary concurrent Profile targeting remains unsupported because root CDP Extensions operations have no Profile selector. The narrow single-Profile gate and fresh checks are not an atomic lease against concurrent Profile creation. Do not mark general multi-Profile automatic writes as passed. Existing Windows runtime, other Edge versions and automatic persistent loading/reload remain unverified.

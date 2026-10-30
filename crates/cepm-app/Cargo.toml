@@ -13,5 +13,6 @@ directories = "6"
 chrono = "0.4"
 
 [features]
-# Forward the narrowly gated adapter; intentionally off until runtime acceptance.
+# Enable the adapter validated on the exact supported macOS Edge build.
+default = ["edge-uninstall"]
 edge-uninstall = ["cepm-core/edge-uninstall"]
